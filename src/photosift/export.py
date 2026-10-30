@@ -187,6 +187,7 @@ def set_export_state(settings: Settings, run_id: str, action: str, confirmation:
                 "retry": ("done_with_errors", "approved", "RETRY FAILED"),
                 "rollback": ("done", "rollback_requested", "ROLLBACK COPIES"),
                 "rollback_errors": ("done_with_errors", "rollback_requested", "ROLLBACK COPIES"),
+                "retry_rollback": ("rollback_partial", "rollback_requested", "ROLLBACK COPIES"),
                 "cancel": ("planned", "cancelled", "CANCEL EXPORT")}
     if action not in expected:
         raise ExportError("Unknown export action")
@@ -288,6 +289,13 @@ def _copy_one(run_root: Path, row: sqlite3.Row) -> str:
         tmp.unlink(missing_ok=True)
 
 
+def _csv_cell(value: object) -> object:
+    """Prevent untrusted model-generated reasons from executing as spreadsheet formulas."""
+    if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@", "\t", "\r", "\n")):
+        return "'" + value
+    return value
+
+
 def _write_manifest(run_root: Path, operations: list[dict]) -> None:
     _safe_destination(run_root.parent,run_root / "manifest.json",create=True)
     fields = ["source","destination","expected_hash","expected_size","category","decision",
@@ -302,7 +310,8 @@ def _write_manifest(run_root: Path, operations: list[dict]) -> None:
             else:
                 writer = csv.DictWriter(handle,fieldnames=fields)
                 writer.writeheader()
-                writer.writerows(records)
+                writer.writerows({key: _csv_cell(value) for key, value in record.items()}
+                                 for record in records)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp,target)
@@ -353,7 +362,12 @@ def run_export(settings: Settings, run_id: str, stop: Protocol) -> None:
                 else:
                     operations = [dict(r) for r in db.execute(
                         "SELECT * FROM export_operations WHERE export_id=? ORDER BY id",(run_id,))]
-                    _write_manifest(run_root,operations)
+                    try:
+                        _write_manifest(run_root,operations)
+                    except Exception:
+                        # Do not crash the worker on an unavailable export volume.
+                        # An explicit retry can regenerate the manifest once restored.
+                        pass
                     db.execute("UPDATE export_runs SET state='done_with_errors' WHERE id=?",(run_id,))
                     return
             db.execute("UPDATE export_operations SET state='in_progress',error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -393,8 +407,17 @@ def rollback_export(settings: Settings, run_id: str) -> None:
         try:
             dst = Path(row["destination"])
             _safe_destination(run_root,dst)
-            if not dst.is_file() or dst.is_symlink() or _hash(dst) != row["verified_hash"] or row["verified_hash"] != row["expected_hash"]:
-                raise ExportError("Output missing or modified: refusing to remove")
+            if row["verified_hash"] != row["expected_hash"]:
+                raise ExportError("Unverified output: refusing to remove")
+            if not dst.exists() and not dst.is_symlink():
+                # Crash recovery: unlink may have succeeded before the journal update.
+                # An already absent output needs no deletion and is safe to reconcile.
+                with connect(settings.data_dir) as db:
+                    db.execute("UPDATE export_operations SET state='rolled_back',error=NULL,"
+                               "updated_at=CURRENT_TIMESTAMP WHERE id=?", (row["id"],))
+                continue
+            if not dst.is_file() or dst.is_symlink() or _hash(dst) != row["verified_hash"]:
+                raise ExportError("Output modified: refusing to remove")
             dst.unlink()
             with connect(settings.data_dir) as db:
                 db.execute("UPDATE export_operations SET state='rolled_back',updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -407,6 +430,10 @@ def rollback_export(settings: Settings, run_id: str) -> None:
     with connect(settings.data_dir) as db:
         operations = [dict(r) for r in db.execute(
             "SELECT * FROM export_operations WHERE export_id=? ORDER BY id",(run_id,))]
-        _write_manifest(run_root,operations)
+        try:
+            _write_manifest(run_root,operations)
+        except Exception:
+            # Still persist a recoverable rollback state if manifest media is unavailable.
+            failures += 1
         db.execute("UPDATE export_runs SET state=? WHERE id=?",
                    ("rollback_partial" if failures else "rolled_back",run_id))

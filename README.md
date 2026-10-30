@@ -254,7 +254,7 @@ For local builds, use compose.yaml instead of compose.registry.yaml and build be
 3. Inspect every source and destination in the paginated plan. Type COPY APPROVED and click Approve to start the separate worker.
 4. The worker verifies each source size and hash, copies to an exclusive temporary file, verifies the output, preserves file metadata and publishes without overwriting any existing filename. Every operation is journaled. A changed source or destination conflict is marked Failed, never silently overwritten.
 5. Manifest files manifest.csv and manifest.json capture original/new paths, hashes, category, decision, model reason, date/date source and operation results. The operation journal survives restart and skips previously successful copies. An output linked before its ownership was journaled is conservatively reported as a conflict, not deleted.
-6. Completed runs support a typed ROLLBACK COPIES action. Rollback deletes only run-owned output files whose current hash still matches the verified journal; modified outputs remain untouched and cause partial rollback. A failed operation can be retried explicitly without repeating completed copies.
+6. Completed runs support a typed ROLLBACK COPIES action. Rollback deletes only run-owned output files whose current hash still matches the verified journal; modified outputs remain untouched and cause partial rollback. A failed operation can be retried explicitly without repeating completed copies. A partial rollback can also be retried after inspecting and resolving the reported conflicts; if a crash occurred after unlinking a verified output but before journaling it, the next rollback reconciles that already-absent output. The CSV manifest neutralizes spreadsheet formulas from AI-generated reasons while JSON preserves the original text.
 
 Photos go under Organized/Photos/YYYY/YYYY-MM, documents under Organized/Documents, screenshots under Organized/Screenshots, graphics under Organized/Memes-and-Graphics, other under Organized/Other, deferred items under Organized/Review-Later and optional clutter under Clutter. EXIF or filename dates take priority; mtime fallback is documented as less reliable. No original image is ever moved, renamed, modified or deleted.
 
@@ -263,6 +263,6 @@ Photos go under Organized/Photos/YYYY/YYYY-MM, documents under Organized/Documen
 - GET /api/exports/status: destination availability
 - POST /api/exports/plans: immutable preview plan, optional include_clutter boolean
 - GET /api/exports and GET /api/exports/{id}: recent runs and paginated operations
-- POST /api/exports/{id}/action: approve, retry, rollback, rollback_errors or cancel plus exact confirmation phrase
+- POST /api/exports/{id}/action: approve, retry, rollback, rollback_errors, retry_rollback or cancel plus exact confirmation phrase
 
 M6 adds immutable migration 002_export_metadata.sql. Run backend tests and frontend build before deployment. First test on a small reviewed sample; full exports may use significant space. GitHub commits do not automatically replace a running ZimaOS container.

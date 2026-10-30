@@ -43,7 +43,7 @@ class ExportPlanRequest(BaseModel):
 
 
 class ExportAction(BaseModel):
-    action: Literal["approve","retry","rollback","rollback_errors","cancel"]
+    action: Literal["approve","retry","rollback","rollback_errors","retry_rollback","cancel"]
     confirmation: str
 
 

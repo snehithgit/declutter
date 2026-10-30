@@ -54,7 +54,7 @@ export default function Exports(){
   catch(e){setError(e instanceof Error?e.message:'Action failed');}finally{setBusy(false);}
  }
  const phrase=detail?.state==='planned'?'COPY APPROVED':
-  detail?.state==='done'||detail?.state==='done_with_errors'?'ROLLBACK COPIES':'';
+  ['done','done_with_errors','rollback_partial'].includes(detail?.state||'')?'ROLLBACK COPIES':'';
  return <section className="export-workspace">
   <div className="eyebrow">MILESTONE 06 · COPY-ONLY EXPORT</div><h1>Organize safely.</h1>
   <p>Preview and explicitly approve every copy. PhotoSift never moves or deletes your original photos.</p>
@@ -97,11 +97,17 @@ export default function Exports(){
      <label>Type <b>{phrase}</b> to confirm<input value={confirmation} onChange={e=>setConfirmation(e.target.value)}
       placeholder={phrase}/></label>
      <button disabled={busy||confirmation!==phrase} onClick={()=>void action(
-      detail.state==='planned'?'approve':detail.state==='done'?'rollback':'rollback_errors',phrase)}>
-      {detail.state==='planned'?'Approve and copy':'Rollback verified output copies'}</button>
+      detail.state==='planned'?'approve':detail.state==='done'?'rollback':
+        detail.state==='rollback_partial'?'retry_rollback':'rollback_errors',phrase)}>
+      {detail.state==='planned'?'Approve and copy':detail.state==='rollback_partial'?
+        'Retry incomplete rollback':'Rollback verified output copies'}</button>
     </div>}
     {detail.state==='planned'&&<button disabled={busy} onClick={()=>void action('cancel','CANCEL EXPORT')}>Discard plan</button>}
     {detail.state==='done_with_errors'&&<button disabled={busy} onClick={()=>{if(window.confirm('Retry failed files only?'))void action('retry','RETRY FAILED');}}>Retry failed files</button>}
+    {detail.state==='rollback_partial'&&<p className="export-error">
+      Some verified copies could not be removed or the manifest could not be written.
+      Inspect the errors above. Retry only after resolving the issue; modified output files remain protected.
+    </p>}
     {['done','done_with_errors','rolled_back','rollback_partial'].includes(detail.state)&&
      <p>Export folder contains manifest.csv and manifest.json with source and destination records.</p>}
    </>}

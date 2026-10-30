@@ -162,3 +162,78 @@ def test_export_root_overlap_rejected(tmp_path: Path):
     conf.write_text('data_dir="./data"\nexport_dir="./photos/out"\nlibrary_roots=["./photos"]\n')
     with pytest.raises(ValueError,match="overlap"):
         load_settings(conf)
+
+
+
+def test_partial_rollback_can_be_retried_after_modified_output_is_restored(library):
+    settings, photos, exports, digest = library
+    plan = create_plan(settings)
+    approve(settings, plan["id"])
+    run_export(settings, plan["id"], Event())
+    target = Path(export_detail(settings, plan["id"])["operations"][0]["destination"])
+    target.write_bytes(b"someone-modified-this")
+    set_export_state(settings, plan["id"], "rollback", "ROLLBACK COPIES")
+    rollback_export(settings, plan["id"])
+    assert export_detail(settings, plan["id"])["state"] == "rollback_partial"
+    assert target.exists()
+    with pytest.raises(ExportError):
+        set_export_state(settings, plan["id"], "retry_rollback", "no")
+    # Restore the exact verified export bytes before retrying.
+    target.write_bytes((photos / "IMG_20260102.jpg").read_bytes())
+    set_export_state(settings, plan["id"], "retry_rollback", "ROLLBACK COPIES")
+    rollback_export(settings, plan["id"])
+    assert export_detail(settings, plan["id"])["state"] == "rolled_back"
+    assert not target.exists()
+    assert (photos / "IMG_20260102.jpg").is_file()
+
+
+def test_rollback_recovers_unlinked_but_unjournaled_copy(library):
+    settings, photos, exports, digest = library
+    plan = create_plan(settings)
+    approve(settings, plan["id"])
+    run_export(settings, plan["id"], Event())
+    target = Path(export_detail(settings, plan["id"])["operations"][0]["destination"])
+    set_export_state(settings, plan["id"], "rollback", "ROLLBACK COPIES")
+    target.unlink()  # Simulate crash after unlink but before SQLite update
+    rollback_export(settings, plan["id"])
+    assert export_detail(settings, plan["id"])["state"] == "rolled_back"
+    with connect(settings.data_dir) as db:
+        assert db.execute("SELECT state FROM export_operations WHERE export_id=?",
+                          (plan["id"],)).fetchone()[0] == "rolled_back"
+
+
+def test_manifest_csv_escapes_untrusted_spreadsheet_formulas(library):
+    import csv
+    settings, photos, exports, digest = library
+    plan = create_plan(settings)
+    with connect(settings.data_dir) as db:
+        db.execute("UPDATE export_operations SET model_reason=? WHERE export_id=?",
+                   ("=HYPERLINK(\"https://example.invalid\",\"click\")", plan["id"]))
+    approve(settings, plan["id"])
+    run_export(settings, plan["id"], Event())
+    folder = Path(plan["destination"])
+    original = json.loads((folder / "manifest.json").read_text())[0]["model_reason"]
+    with (folder / "manifest.csv").open(newline="", encoding="utf-8") as stream:
+        csv_value = list(csv.DictReader(stream))[0]["model_reason"]
+    assert original.startswith("=")
+    assert csv_value.startswith("'=")
+    assert csv_value[1:] == original
+
+
+def test_manifest_failure_during_rollback_stays_recoverable(library, monkeypatch):
+    import photosift.export as exporter
+    settings, photos, exports, digest = library
+    plan = create_plan(settings)
+    approve(settings, plan["id"])
+    run_export(settings, plan["id"], Event())
+    target = Path(export_detail(settings, plan["id"])["operations"][0]["destination"])
+    set_export_state(settings, plan["id"], "rollback", "ROLLBACK COPIES")
+    original = exporter._write_manifest
+    monkeypatch.setattr(exporter, "_write_manifest", lambda *_: (_ for _ in ()).throw(OSError("disk unplugged")))
+    rollback_export(settings, plan["id"])
+    assert export_detail(settings, plan["id"])["state"] == "rollback_partial"
+    assert not target.exists()
+    monkeypatch.setattr(exporter, "_write_manifest", original)
+    set_export_state(settings, plan["id"], "retry_rollback", "ROLLBACK COPIES")
+    rollback_export(settings, plan["id"])
+    assert export_detail(settings, plan["id"])["state"] == "rolled_back"
