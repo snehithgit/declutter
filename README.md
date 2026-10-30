@@ -217,7 +217,7 @@ Open **Review** from the desktop sidebar or mobile view switch. M5 displays one 
 - Filter by AI/manual category, review status, uncertain prediction, importance flag, root, filename or folder substring, capture date range, exact duplicate groups, blur heuristic and low-resolution flag.
 - Select individual thumbnails, Shift-select a range on the current page, select the current page, or select **all matching results** across pages. All-matching bulk updates apply current filters at execution time and require confirmation in the UI.
 - Apply Keep, Clutter, Review later or reset to Undecided. Correct category independently of decision, or clear override to use the latest AI suggestion.
-- Detail view shows up to 300 known copy locations, capture date, camera, model reasoning, quality flags, and up to 40 recent audit entries.
+- Detail view shows all known copy locations in pages of 100, including missing or disabled-root history, plus capture date, camera, model reasoning, quality flags, and up to 40 recent audit entries.
 - Keyboard shortcuts in the detail view: K Keep, C Clutter, L Review later, U Undecided, left/right arrows navigate, Escape closes.
 - Audit records retain previous and new decision/category per changed content hash with timestamp. Idempotent updates do not produce audit entries.
 
@@ -227,9 +227,11 @@ Backend operations validate digests, reject missing/disabled-only content, and c
 
 - GET /api/reviews/summary — counts per review decision
 - GET /api/reviews — filtered, paginated thumbnails and metadata, with maximum limit 120
-- GET /api/reviews/{sha256} — detail, known locations and audit history
+- GET /api/reviews/{sha256} — detail, first 100 locations and audit history
+- GET /api/reviews/{sha256}/copies — all locations in pages (limit/offset)
 - POST /api/reviews/bulk — JSON with either hashes or filters, plus decision, category_override or clear_category
 - GET /api/reviews/audit — correction history, optional content_hash, limit and offset
+- GET /api/reviews/audit.csv — download all corrections as a CSV for future model evaluation
 
 Example request body: {"filters":{"review_status":"undecided","duplicates_only":true},"decision":"review_later"}.
 
