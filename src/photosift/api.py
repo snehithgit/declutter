@@ -1,6 +1,9 @@
 """Read-only photo browsing plus explicit inventory job controls."""
 from __future__ import annotations
 
+import csv
+import io
+import json
 import sqlite3
 import time
 import uuid
@@ -11,7 +14,7 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -20,7 +23,7 @@ from .config import Settings
 from .db import connect, initialize
 from .duplicates import duplicate_summary, list_duplicate_groups, duplicate_group_files
 from .classification import queue_classification, classification_jobs, recent_predictions
-from .review import ReviewFilters, ReviewChange, review_page, review_summary, review_detail, review_history, apply_review
+from .review import ReviewFilters, ReviewChange, review_page, review_summary, review_detail, review_copies, review_history, apply_review
 from .logging_setup import configure_logging
 from .worker import LEASE_SECONDS
 
@@ -283,6 +286,37 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
                       offset: int = Query(default=0, ge=0)) -> dict:
         with connect(settings.data_dir) as db:
             return review_history(db, content_hash, limit, offset)
+
+    @app.get("/api/reviews/audit.csv")
+    def review_audit_csv() -> StreamingResponse:
+        """Export correction history, suitable for later model evaluation."""
+        def rows():
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["timestamp", "content_hash", "decision_before", "decision_after",
+                             "category_before", "category_after"])
+            yield output.getvalue()
+            with connect(settings.data_dir) as db:
+                for entry in db.execute("""SELECT created_at,content_hash,before_json,after_json
+                                            FROM audit_log ORDER BY id"""):
+                    before = json.loads(entry["before_json"] or "{}")
+                    after = json.loads(entry["after_json"] or "{}")
+                    output.seek(0)
+                    output.truncate(0)
+                    writer.writerow([entry["created_at"], entry["content_hash"],
+                        before.get("decision"), after.get("decision"),
+                        before.get("category_override"), after.get("category_override")])
+                    yield output.getvalue()
+        return StreamingResponse(rows(), media_type="text/csv", headers={
+            "Content-Disposition": 'attachment; filename="photosift-review-audit.csv"'})
+
+    @app.get("/api/reviews/{digest}/copies")
+    def review_copy_list(digest: str, limit: int = Query(default=100, ge=1, le=200),
+                         offset: int = Query(default=0, ge=0)) -> dict:
+        with connect(settings.data_dir) as db:
+            if review_detail(db, digest) is None:
+                raise HTTPException(404, "Review image not found")
+            return review_copies(db, digest, limit, offset)
 
     @app.get("/api/reviews/{digest}")
     def review_item(digest: str) -> dict:
