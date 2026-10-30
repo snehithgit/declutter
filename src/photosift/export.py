@@ -403,7 +403,7 @@ def rollback_export(settings: Settings, run_id: str) -> None:
             failures += 1
             with connect(settings.data_dir) as db:
                 db.execute("UPDATE export_operations SET error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                           ("Rollback skipped: " + str(exc))[:500],row["id"])
+                           (("Rollback skipped: " + str(exc))[:500],row["id"]))
     with connect(settings.data_dir) as db:
         operations = [dict(r) for r in db.execute(
             "SELECT * FROM export_operations WHERE export_id=? ORDER BY id",(run_id,))]
