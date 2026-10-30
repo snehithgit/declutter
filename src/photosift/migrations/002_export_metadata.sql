@@ -1,4 +1,4 @@
--- Immutable M6 export plan metadata snapshot; preserves existing export journal.
+-- Immutable M6 export plan metadata snapshot, preserving the existing export journal.
 ALTER TABLE export_operations ADD COLUMN category TEXT;
 ALTER TABLE export_operations ADD COLUMN decision TEXT;
 ALTER TABLE export_operations ADD COLUMN model_reason TEXT;
