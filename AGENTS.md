@@ -3,8 +3,8 @@
 This is a fresh project. Do not reuse the parent legacy organizer's database or photo operations.
 The accepted architecture is Zima app/database/worker + laptop Ollama inference over LAN.
 
-- Follow the milestone order in README. Stop after each milestone's tests and summary.
-- M1 only: no scan, model requests, classification, file copies, moves, or deletes.
+- Follow the milestone order in README. Stop after each milestone's tests and summary. M2 is implemented on main; M3 is next.
+- M2: read-only scanning and thumbnail caching are enabled. Never perform AI requests, review actions, exports, file copies, moves, or deletes.
 - Never modify originals. Future exports are copy-only and require explicit approval.
 - Use Python 3.12, typed small functions, FastAPI, plain sqlite3, React/Vite/TypeScript.
 - All lengthy operations belong in the separate persistent worker, never API background tasks.

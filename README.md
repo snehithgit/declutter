@@ -1,13 +1,13 @@
 # PhotoSift — Release 1
 
-Local photo decluttering using D3 Nano in Ollama. **Current milestone: M1, foundation only.**
-No scanning, classification, review actions, or photo export exists yet. The UI reports this explicitly.
+Local photo decluttering with a persistent read-only inventory. **Current milestone: M2 (inventory and previews).**
+M2 provides scans, hashing, image metadata and previews. AI classification, review decisions, and photo export are not implemented.
 
 ## Accepted architecture
 
 ZimaOS hosts the FastAPI app, built React UI, SQLite database, thumbnails/previews/logs,
 and a separate worker process. The GPU laptop runs Ollama. Future M4 inference sends
-resized previews only to the configured laptop URL. M1 makes no outbound requests.
+resized previews only to the configured laptop URL. M2 makes no outbound requests.
 The database must live on Zima's local filesystem, preferably SSD, never an SMB/NFS mount.
 
 This supersedes the original brief's laptop-hosted app and localhost-only deployment.
@@ -67,14 +67,14 @@ The production build is served directly by FastAPI, with no Node process require
 5. Check `docker compose ps`, `/api/health`, and `docker compose logs`.
 
 The photo source is mounted read-only. Logs rotate under `/data/logs`; Docker output also rotates.
-The entire runtime makes no external calls in M1. Building/installing dependencies needs internet.
+The inventory worker makes no external calls in M2. Building/installing dependencies needs internet.
 Ollama availability is deliberately **not checked** until M4, so the UI says “Not checked yet”.
 Publishing Ollama to the LAN will require its `OLLAMA_HOST` setting and an appropriately scoped
 laptop firewall rule; no laptop networking is changed by this milestone.
 
 ### Current deployed instance
 
-M1 is deployed at `http://192.168.68.63:8765`, from `/DATA/AppData/photosift/project`.
+The previous M1 deployment was verified at `http://192.168.68.63:8765`, from `/DATA/AppData/photosift/project`.
 Its read-only source mount is `/DATA/Gallery/local`; its local data path is
 `/DATA/AppData/photosift/data`. On this immutable ZimaOS installation, use the dedicated
 writable Docker client configuration when running builds or Compose commands:
@@ -121,15 +121,40 @@ npm run build
 
 `GET /api/health` reports DB version/WAL and the separate worker heartbeat. `GET /api/settings`
 reports effective settings. A missing worker is reported as degraded and makes the Docker health
-check fail. No endpoint creates jobs or mutates library files in M1.
+check fail. Inventory jobs can be created with `POST /api/scans`; no endpoint writes to original photos.
 
 ## Milestones (stop for review after each)
 
-1. **M1:** configuration, schema/migrations, worker skeleton, UI shell, startup/deployment.
-2. M2: incremental read-only inventory, streamed hashing, thumbnails, disconnect-safe scans.
+1. **M1 complete:** configuration, schema/migrations, worker skeleton, UI shell, startup/deployment.
+2. **M2 complete:** incremental read-only inventory, streamed hashing, thumbnails, disconnect-safe scans.
 3. M3: exact duplicate groups and shared content identity.
 4. M4: resumable D3 Nano classification, retries/controls, benchmark, per-item persistence.
 5. M5: virtualized review grid, filters, bulk decisions, keyboard controls, audit history.
 6. M6: explicitly approved, verified copy-only export with manifests and recovery journal.
 
 Later: near duplicates, event grouping, embedding models, XMP and gallery integration.
+
+## M2 inventory — how to use
+
+Deploy the updated image or rebuild locally with `docker compose up -d --build` after reviewing your `.env` volumes.
+Open the PhotoSift web UI and select **Scan library**. The persistent worker scans enabled roots one at a time.
+Pause, resume, or cancel scans from the UI. Interrupted running scans restart safely from the beginning;
+unchanged file hashes are reused, while missing files are marked only after a fully successful root scan.
+A disconnected or unreadable directory pauses the scan rather than treating unseen files as deleted.
+
+The UI shows file count, total bytes, formats, missing/unreadable/unsupported counts, paginated 60-image thumbnails,
+filters, filename search, and metadata with 1024px previews. JPEG, PNG, WebP, GIF (first frame), HEIC/HEIF,
+BMP, and TIFF are analyzed. Other files (including RAW/video) are inventoried and hashed but not decoded.
+Source symlinks are skipped. All library access is read-only; thumbnail and preview WebP files live under `/data`.
+Photo originals remain untouched. M2 performs no Ollama inference, sorting, review actions, or exports.
+
+### M2 API
+
+- `GET /api/inventory`: counters, formats and roots
+- `GET /api/files?limit=60&offset=0`: paginated filtered file metadata
+- `GET /api/jobs`: inventory job history and progress
+- `POST /api/scans` with optional JSON `{"root_id": 1}`: queue read-only scan
+- `POST /api/jobs/{id}/action` with `{"action":"pause"}`, `resume`, or `cancel`
+- `GET /api/thumbnails/{sha256}` and `GET /api/previews/{sha256}`: cached images
+
+Do not enable the next classification milestone until M2 is reviewed on your library.

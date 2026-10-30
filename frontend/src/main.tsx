@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
+import Inventory from './Inventory';
 
 type Health = { status: string; milestone: string; version: string;
   database: { schema_version: number; journal_mode: string }; worker: { state: string } };
@@ -35,17 +36,17 @@ function App() {
       <div className="sidebar-label">YOUR WORKSPACE</div>
       <div className="nav active">◫ <span>Overview</span></div>
       <div className="sidebar-label release-label">RELEASE 1</div>
-      {steps.map((step, index) => <div key={step} className={`step ${index === 0 ? 'current' : ''}`}>
-        <span className="step-number">{index === 0 ? '✓' : String(index + 1).padStart(2, '0')}</span>
-        <span>{step}</span>{index > 0 && <span className="later">Later</span>}
+      {steps.map((step, index) => <div key={step} className={`step ${index === 1 ? 'current' : ''}`}>
+        <span className="step-number">{index <= 1 ? '✓' : String(index + 1).padStart(2, '0')}</span>
+        <span>{step}</span>{index > 1 && <span className="later">Later</span>}
       </div>)}
       <div className="sidebar-foot"><span className="dot"/> Local processing<br/><small>Your library stays on your devices.</small></div>
     </aside>
     <main>
-      <header><span>Workspace <span className="slash">/</span> Overview</span><span className="badge">MILESTONE 01</span></header>
+      <header><span>Workspace <span className="slash">/</span> Overview</span><span className="badge">MILESTONE 02</span></header>
       <section className="intro"><div className="eyebrow">A LITTLE LESS CLUTTER. A LOT MORE MEANING.</div>
         <h1>Make room for the moments.</h1>
-        <p>A thoughtful home for sorting your photo library. Start with a reliable foundation,<br className="desktop"/> then discover, review, and organize at your own pace.</p>
+        <p>A thoughtful home for sorting your photo library. Start scanning your photo library safely, then browse filenames, metadata and thumbnails.</p>
       </section>
       {error && <div role="alert" className="error">{error} <button onClick={() => setRefresh(value => value + 1)}>Retry</button></div>}
       <section className="status-grid" aria-label="System status">
@@ -53,10 +54,11 @@ function App() {
         <Status title="BACKGROUND WORKER" value={health?.worker.state === 'ready' ? 'Ready' : 'Offline'} note="Separate process · persistent state" good={health?.worker.state === 'ready' && !error}/>
         <Status title="AI INFERENCE" value="Not checked yet" note="Ollama connection arrives in M4" good={false}/>
       </section>
-      <section className="foundation panel"><div className="foundation-icon">✳</div><div><span className="eyebrow">FOUNDATION FIRST</span><h2>Your workspace is taking shape.</h2>
-        <p>Configuration, the database, and the worker are in place. Scanning and photo actions are intentionally unavailable until their milestones are ready.</p>
-        <div className="progress"><span/></div><div className="progress-caption"><b>Milestone 1 of 6</b><span>Project foundation</span></div>
+      <section className="foundation panel"><div className="foundation-icon">✳</div><div><span className="eyebrow">READ-ONLY INVENTORY</span><h2>Discover your photo library.</h2>
+        <p>The inventory scanner and photo preview grid are available. AI classification, review decisions and exports remain disabled.</p>
+        <div className="progress"><span/></div><div className="progress-caption"><b>Milestone 2 of 6</b><span>Inventory and previews</span></div>
       </div></section>
+      <Inventory/>
       <div className="section-heading"><h2>Workspace configuration</h2><span>Read-only overview</span></div>
       <section className="config-grid">
         <div className="panel config-panel"><div className="card-heading"><span>◧</span><h3>Photo library</h3></div>

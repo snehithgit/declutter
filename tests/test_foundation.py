@@ -97,7 +97,8 @@ def test_api_never_scans_and_reports_worker(config_file: Path):
     with TestClient(create_app(settings)) as client:
         health = client.get("/api/health").json()
         assert health["worker"]["state"] == "offline"
-        assert not any(health["features"].values())
+        assert health["features"]["inventory"] is True
+        assert all(not health["features"][feature] for feature in ("classification", "review", "export"))
         assert client.get("/api/settings").json()["ollama_checked"] is False
         assert client.post("/api/scan").status_code == 404
         assert client.get("/api/health", headers={"host": "attacker.invalid"}).status_code == 400
