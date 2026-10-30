@@ -149,7 +149,7 @@ export default function Review(){
    if(key==='escape'){event.preventDefault();setSelected(null);return;}
    if(key==='arrowleft'||key==='arrowright'){event.preventDefault();move(key==='arrowright'?1:-1);return;}
    const decision:Record<string,Decision>={k:'keep',c:'clutter',l:'review_later',u:'undecided'};
-   if(!busy&&decision[key]){event.preventDefault();void update({decision:decision[key]},selected);}
+   if(!busy&&decision[key]){event.preventDefault();void update({decision:decision[key]},selected!);}
   }
   window.addEventListener('keydown',keyboard);return()=>window.removeEventListener('keydown',keyboard);
  },[selected,page.items,busy,checked,allMatching,filters]);
