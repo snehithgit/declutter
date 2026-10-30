@@ -4,6 +4,7 @@ import './style.css';
 import Inventory from './Inventory';
 import Duplicates from './Duplicates';
 import Classification from './Classification';
+import Review from './Review';
 
 type Health = { status: string; milestone: string; version: string;
   database: { schema_version: number; journal_mode: string }; worker: { state: string } };
@@ -15,7 +16,7 @@ function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
-  const [page, setPage] = useState<'overview' | 'duplicates' | 'classification'>('overview');
+  const [page, setPage] = useState<'overview' | 'duplicates' | 'classification' | 'review'>('overview');
   useEffect(() => {
     const controller = new AbortController();
     async function load() {
@@ -40,21 +41,23 @@ function App() {
       <button type="button" className={`nav nav-button ${page === 'overview' ? 'active' : ''}`} onClick={() => setPage('overview')}>◫ <span>Overview</span></button>
       <button type="button" className={`nav nav-button ${page === 'duplicates' ? 'active' : ''}`} onClick={() => setPage('duplicates')}>▧ <span>Duplicates</span></button>
       <button type="button" className={`nav nav-button ${page === 'classification' ? 'active' : ''}`} onClick={() => setPage('classification')}>✧ <span>AI classification</span></button>
+      <button type="button" className={`nav nav-button ${page === 'review' ? 'active' : ''}`} onClick={() => setPage('review')}>☑ <span>Review</span></button>
       <div className="sidebar-label release-label">RELEASE 1</div>
-      {steps.map((step, index) => <div key={step} className={`step ${index === 3 ? 'current' : ''}`}>
-        <span className="step-number">{index <= 3 ? '✓' : String(index + 1).padStart(2, '0')}</span>
-        <span>{step}</span>{index > 3 && <span className="later">Later</span>}
+      {steps.map((step, index) => <div key={step} className={`step ${index === 4 ? 'current' : ''}`}>
+        <span className="step-number">{index <= 4 ? '✓' : String(index + 1).padStart(2, '0')}</span>
+        <span>{step}</span>{index > 4 && <span className="later">Later</span>}
       </div>)}
       <div className="sidebar-foot"><span className="dot"/> Local processing<br/><small>Your library stays on your devices.</small></div>
     </aside>
     <main>
-      <header><span>Workspace <span className="slash">/</span> {page === 'overview' ? 'Overview' : page === 'duplicates' ? 'Duplicates' : 'AI classification'}</span><span className="badge">MILESTONE 04</span></header>
+      <header><span>Workspace <span className="slash">/</span> {page === 'overview' ? 'Overview' : page === 'duplicates' ? 'Duplicates' : page === 'classification' ? 'AI classification' : 'Review'}</span><span className="badge">MILESTONE 05</span></header>
       <div className="mobile-view-switch" aria-label="Workspace view">
         <button type="button" className={page === 'overview' ? 'selected' : ''} onClick={() => setPage('overview')}>Overview</button>
         <button type="button" className={page === 'duplicates' ? 'selected' : ''} onClick={() => setPage('duplicates')}>Duplicates</button>
         <button type="button" className={page === 'classification' ? 'selected' : ''} onClick={() => setPage('classification')}>AI</button>
+        <button type="button" className={page === 'review' ? 'selected' : ''} onClick={() => setPage('review')}>Review</button>
       </div>
-      {page === 'duplicates' ? <Duplicates/> : page === 'classification' ? <Classification model={settings?.ollama.model ?? ''} endpoint={settings?.ollama.url ?? ''}/> : <>
+      {page === 'duplicates' ? <Duplicates/> : page === 'classification' ? <Classification model={settings?.ollama.model ?? ''} endpoint={settings?.ollama.url ?? ''}/> : page === 'review' ? <Review/> : <>
       <section className="intro"><div className="eyebrow">A LITTLE LESS CLUTTER. A LOT MORE MEANING.</div>
         <h1>Make room for the moments.</h1>
         <p>A thoughtful home for sorting your photo library. Start scanning your photo library safely, then browse filenames, metadata and thumbnails.</p>
@@ -66,8 +69,8 @@ function App() {
         <Status title="AI INFERENCE" value="Not checked yet" note="Ollama only contacted during classification" good={false}/>
       </section>
       <section className="foundation panel"><div className="foundation-icon">✳</div><div><span className="eyebrow">READ-ONLY INVENTORY</span><h2>Discover your photo library.</h2>
-        <p>Inventory, duplicates and local AI classification are available. Review decisions and exports remain disabled.</p>
-        <div className="progress"><span/></div><div className="progress-caption"><b>Milestone 4 of 6</b><span>Resumable AI classification</span></div>
+        <p>Inventory, duplicate grouping, AI classification and human review are available. Export remains disabled.</p>
+        <div className="progress"><span/></div><div className="progress-caption"><b>Milestone 5 of 6</b><span>Human review and corrections</span></div>
       </div></section>
       <Inventory/>
       <div className="section-heading"><h2>Workspace configuration</h2><span>Read-only overview</span></div>
@@ -84,7 +87,7 @@ function App() {
         </div>
       </section>
       </>}
-      <footer><span>Originals stay untouched. You stay in control.</span><span>PhotoSift {health?.version ?? '0.4.0'}</span></footer>
+      <footer><span>Originals stay untouched. You stay in control.</span><span>PhotoSift {health?.version ?? '0.5.0'}</span></footer>
     </main>
   </div>;
 }

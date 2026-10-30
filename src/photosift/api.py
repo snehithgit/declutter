@@ -5,10 +5,11 @@ import sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +20,7 @@ from .config import Settings
 from .db import connect, initialize
 from .duplicates import duplicate_summary, list_duplicate_groups, duplicate_group_files
 from .classification import queue_classification, classification_jobs, recent_predictions
+from .review import ReviewFilters, ReviewChange, review_page, review_summary, review_detail, review_history, apply_review
 from .logging_setup import configure_logging
 from .worker import LEASE_SECONDS
 
@@ -40,6 +42,25 @@ def _rows(cursor: sqlite3.Cursor) -> list[dict]:
     return [dict(row) for row in cursor.fetchall()]
 
 
+
+def review_query_filters(
+    category: Literal["personal_photo","screenshot","meme_graphic","document","other","unclassified"] | None = None,
+    review_status: Literal["undecided","keep","clutter","review_later"] | None = None,
+    uncertain: bool | None = None, important: bool | None = None,
+    root_id: int | None = Query(default=None, ge=1),
+    folder: str = Query(default="", max_length=180),
+    search: str = Query(default="", max_length=180),
+    date_from: date | None = None, date_to: date | None = None,
+    duplicates_only: bool = False, blurry: bool | None = None, low_res: bool | None = None,
+) -> ReviewFilters:
+    try:
+        return ReviewFilters(category=category, review_status=review_status, uncertain=uncertain,
+            important=important,root_id=root_id,folder=folder,search=search,
+            date_from=date_from,date_to=date_to,duplicates_only=duplicates_only,
+            blurry=blurry,low_res=low_res)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
+
 def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -58,10 +79,10 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
             worker = db.execute("SELECT heartbeat FROM worker_leases WHERE name='main'").fetchone()
             journal = db.execute("PRAGMA journal_mode").fetchone()[0]
         alive = bool(worker and time.time() - worker["heartbeat"] < LEASE_SECONDS)
-        return {"status": "ok" if alive else "degraded", "version": __version__, "milestone": "M4",
+        return {"status": "ok" if alive else "degraded", "version": __version__, "milestone": "M5",
                 "database": {"schema_version": version, "journal_mode": journal},
                 "worker": {"state": "ready" if alive else "offline"},
-                "features": {"inventory": True, "duplicates": True, "classification": True, "review": False, "export": False}}
+                "features": {"inventory": True, "duplicates": True, "classification": True, "review": True, "export": False}}
 
     @app.get("/api/settings")
     def public_settings() -> dict:
@@ -233,6 +254,43 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
                        (dest, dest, job_id))
             db.commit()
         return {"id": job_id, "state": dest}
+
+    @app.get("/api/reviews/summary")
+    def review_totals() -> dict:
+        with connect(settings.data_dir) as db:
+            return review_summary(db)
+
+    @app.get("/api/reviews")
+    def review_list(filters: ReviewFilters = Depends(review_query_filters),
+                    limit: int = Query(default=120, ge=1, le=120),
+                    offset: int = Query(default=0, ge=0)) -> dict:
+        with connect(settings.data_dir) as db:
+            return review_page(db, filters, limit, offset)
+
+    @app.post("/api/reviews/bulk")
+    def change_reviews(change: ReviewChange) -> dict:
+        with connect(settings.data_dir) as db:
+            try:
+                return apply_review(db, change)
+            except ValueError as exc:
+                raise HTTPException(422,str(exc)) from exc
+            except LookupError as exc:
+                raise HTTPException(409,str(exc)) from exc
+
+    @app.get("/api/reviews/audit")
+    def audit_history(content_hash: str | None = None,
+                      limit: int = Query(default=100, ge=1, le=500),
+                      offset: int = Query(default=0, ge=0)) -> dict:
+        with connect(settings.data_dir) as db:
+            return review_history(db, content_hash, limit, offset)
+
+    @app.get("/api/reviews/{digest}")
+    def review_item(digest: str) -> dict:
+        with connect(settings.data_dir) as db:
+            item = review_detail(db,digest)
+        if item is None:
+            raise HTTPException(404,"Review image not found")
+        return item
 
     def media(digest: str, kind: Literal["thumbnails", "previews"]) -> FileResponse:
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):

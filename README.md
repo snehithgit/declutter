@@ -1,12 +1,12 @@
 # PhotoSift — Release 1
 
-Local photo decluttering with a persistent read-only inventory. **Current milestone: M4 (resumable local AI classification).**
-M2 provides scans and image previews. M3 adds exact duplicates. M4 adds user-initiated Ollama classification with durable queues and validated per-content results. Human review decisions and photo export remain unimplemented.
+Local photo decluttering with a persistent read-only inventory. **Current milestone: M5 (human review and corrections).**
+M2 provides scans and image previews. M3 adds exact duplicates. M4 adds user-initiated Ollama classification with durable queues and validated per-content results. M5 adds human review decisions and category corrections. Photo export remains unimplemented.
 
 ## Accepted architecture
 
 ZimaOS hosts the FastAPI app, built React UI, SQLite database, thumbnails/previews/logs,
-and a separate worker process. The GPU laptop runs Ollama. Future M4 inference sends
+and a separate worker process. The GPU laptop runs Ollama. M4 inference sends
 resized previews only to the configured laptop URL. M4 contacts only the configured Ollama endpoint during user-started classification jobs.
 The database must live on Zima's local filesystem, preferably SSD, never an SMB/NFS mount.
 
@@ -129,7 +129,7 @@ check fail. Inventory jobs can be created with `POST /api/scans`; no endpoint wr
 2. **M2 complete:** incremental read-only inventory, streamed hashing, thumbnails, disconnect-safe scans.
 3. **M3 complete:** exact duplicate groups, counts, all copy locations and shared content identity.
 4. **M4 implemented:** resumable D3 Nano classification, retries/controls, benchmark, per-item persistence.
-5. M5: virtualized review grid, filters, bulk decisions, keyboard controls, audit history.
+5. **M5 implemented:** virtualized review grid, filters, bulk decisions, keyboard controls, audit history.
 6. M6: explicitly approved, verified copy-only export with manifests and recovery journal.
 
 Later: near duplicates, event grouping, embedding models, XMP and gallery integration.
@@ -206,4 +206,31 @@ The model must return strict schema-valid JSON: category, subcategory, confidenc
 
 ### Benchmark and deployment
 
-`python -m photosift.benchmark --config config.toml --count 5` runs a read-only sample using cached previews and reports throughput, mean latency and errors without writing AI results. No migration is necessary: M4 uses tables established by M1. GitHub commits do not deploy automatically to the running ZimaOS container; after CI succeeds, use the existing registry Compose pull/up commands. Only M1–M4 are implemented; M5 human review and M6 exports remain disabled.
+`python -m photosift.benchmark --config config.toml --count 5` runs a read-only sample using cached previews and reports throughput, mean latency and errors without writing AI results. No migration is necessary: M4 uses tables established by M1. GitHub commits do not deploy automatically to the running ZimaOS container; after CI succeeds, use the existing registry Compose pull/up commands. Milestones M1–M5 are implemented; M6 copy-only export remains disabled.
+
+
+## M5 — Human photo review
+
+Open **Review** from the desktop sidebar or mobile view switch. M5 displays one entry per unique SHA-256 image content; identical original files share one review record. Unclassified images can be reviewed without running Ollama. AI categories, confidence, explanations, importance and quality flags are suggestions only. Decisions default to Undecided, never automatically Keep or Clutter.
+
+- Virtualized React image grid with 120-item pagination, source thumbnails and large detail previews.
+- Filter by AI/manual category, review status, uncertain prediction, importance flag, root, filename or folder substring, capture date range, exact duplicate groups, blur heuristic and low-resolution flag.
+- Select individual thumbnails, Shift-select a range on the current page, select the current page, or select **all matching results** across pages. All-matching bulk updates apply current filters at execution time and require confirmation in the UI.
+- Apply Keep, Clutter, Review later or reset to Undecided. Correct category independently of decision, or clear override to use the latest AI suggestion.
+- Detail view shows up to 300 known copy locations, capture date, camera, model reasoning, quality flags, and up to 40 recent audit entries.
+- Keyboard shortcuts in the detail view: K Keep, C Clutter, L Review later, U Undecided, left/right arrows navigate, Escape closes.
+- Audit records retain previous and new decision/category per changed content hash with timestamp. Idempotent updates do not produce audit entries.
+
+Backend operations validate digests, reject missing/disabled-only content, and commit each bulk change in one SQLite transaction together with audit entries. Up to 100,000 matching unique contents may be updated per bulk operation; narrow filters if needed. Review endpoints never open or modify original source files. Deletion, movement and exporting remain disabled.
+
+### M5 API
+
+- GET /api/reviews/summary — counts per review decision
+- GET /api/reviews — filtered, paginated thumbnails and metadata, with maximum limit 120
+- GET /api/reviews/{sha256} — detail, known locations and audit history
+- POST /api/reviews/bulk — JSON with either hashes or filters, plus decision, category_override or clear_category
+- GET /api/reviews/audit — correction history, optional content_hash, limit and offset
+
+Example request body: {"filters":{"review_status":"undecided","duplicates_only":true},"decision":"review_later"}.
+
+M5 reuses the M1 reviews and audit_log tables; no migration is needed. The single-user LAN app has no authentication, so restrict its network exposure. Use the Zima read-only library mount. After GitHub Actions succeeds, update the running ZimaOS container separately with your existing registry Compose instructions.

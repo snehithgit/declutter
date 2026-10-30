@@ -94,8 +94,19 @@ jobs:
             [ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
               http://127.0.0.1:8765/api/duplicates/invalid/files)" = "404" ]
           }
+          verify_reviews() {
+            curl --silent --show-error --fail http://127.0.0.1:8765/api/reviews/summary | \
+              python -c 'import json,sys; d=json.load(sys.stdin); assert d["total"]==0 and d["undecided"]==0,d'
+            curl --silent --show-error --fail 'http://127.0.0.1:8765/api/reviews?limit=5' | \
+              python -c 'import json,sys; d=json.load(sys.stdin); assert d["total"]==0 and d["items"]==[],d'
+            curl --silent --show-error --fail http://127.0.0.1:8765/api/reviews/audit | \
+              python -c 'import json,sys; d=json.load(sys.stdin); assert d["total"]==0,d'
+            [ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              http://127.0.0.1:8765/api/reviews/invalid)" = "404" ]
+          }
           wait_for_ready
           verify_duplicates
+          verify_reviews
           curl --silent --show-error --fail http://127.0.0.1:8765/api/health | \
             python -c 'import json,sys; d=json.load(sys.stdin); assert d["features"]["classification"] is True'
           curl --silent --show-error --fail http://127.0.0.1:8765/api/classification/jobs | \
@@ -109,6 +120,7 @@ jobs:
           sleep 20
           wait_for_ready
           verify_duplicates
+          verify_reviews
       - name: Container diagnostics and cleanup
         if: always()
         run: |
