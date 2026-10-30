@@ -6,6 +6,7 @@ import Duplicates from './Duplicates';
 import Classification from './Classification';
 import Review from './Review';
 import Exports from './Exports';
+import {parseRoute,routeHash} from './state.mjs';
 
 type Health = { status: string; milestone: string; version: string;
   database: { schema_version: number; journal_mode: string }; worker: { state: string } };
@@ -17,7 +18,16 @@ function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
-  const [page, setPage] = useState<'overview' | 'duplicates' | 'classification' | 'review' | 'export'>('overview');
+  const [route,setRoute] = useState(() => parseRoute(window.location.hash));
+  const page = route.page;
+  useEffect(() => {
+    const sync = () => setRoute(parseRoute(window.location.hash));
+    window.addEventListener('hashchange',sync);
+    return () => window.removeEventListener('hashchange',sync);
+  },[]);
+  const setDetail = (name:'review'|'export',detail:string|null) => {
+    window.location.hash = routeHash(name,detail);
+  };
   useEffect(() => {
     const controller = new AbortController();
     async function load() {
@@ -37,13 +47,13 @@ function App() {
   const steps = ['Foundation', 'Inventory', 'Duplicates', 'AI classification', 'Review', 'Copy export'];
   return <div className="app">
     <aside>
-      <a className="brand" href="/" aria-label="PhotoSift home"><span className="mark">▧</span> PhotoSift</a>
+      <a className="brand" href="#/overview" aria-label="PhotoSift home"><span className="mark">▧</span> PhotoSift</a>
       <div className="sidebar-label">YOUR WORKSPACE</div>
-      <button type="button" className={`nav nav-button ${page === 'overview' ? 'active' : ''}`} onClick={() => setPage('overview')}>◫ <span>Overview</span></button>
-      <button type="button" className={`nav nav-button ${page === 'duplicates' ? 'active' : ''}`} onClick={() => setPage('duplicates')}>▧ <span>Duplicates</span></button>
-      <button type="button" className={`nav nav-button ${page === 'classification' ? 'active' : ''}`} onClick={() => setPage('classification')}>✧ <span>AI classification</span></button>
-      <button type="button" className={`nav nav-button ${page === 'review' ? 'active' : ''}`} onClick={() => setPage('review')}>☑ <span>Review</span></button>
-      <button type="button" className={`nav nav-button ${page === 'export' ? 'active' : ''}`} onClick={() => setPage('export')}>▣ <span>Copy export</span></button>
+      <a className={`nav nav-button ${page === 'overview' ? 'active' : ''}`} href={routeHash('overview')}>◫ <span>Overview</span></a>
+      <a className={`nav nav-button ${page === 'duplicates' ? 'active' : ''}`} href={routeHash('duplicates')}>▧ <span>Duplicates</span></a>
+      <a className={`nav nav-button ${page === 'classification' ? 'active' : ''}`} href={routeHash('classification')}>✧ <span>AI classification</span></a>
+      <a className={`nav nav-button ${page === 'review' ? 'active' : ''}`} href={routeHash('review')}>☑ <span>Review</span></a>
+      <a className={`nav nav-button ${page === 'export' ? 'active' : ''}`} href={routeHash('export')}>▣ <span>Copy export</span></a>
       <div className="sidebar-label release-label">RELEASE 1</div>
       {steps.map((step, index) => <div key={step} className={`step ${index === 5 ? 'current' : ''}`}>
         <span className="step-number">{index <= 5 ? '✓' : String(index + 1).padStart(2, '0')}</span>
@@ -52,15 +62,15 @@ function App() {
       <div className="sidebar-foot"><span className="dot"/> Local processing<br/><small>Your library stays on your devices.</small></div>
     </aside>
     <main>
-      <header><span>Workspace <span className="slash">/</span> {page === 'overview' ? 'Overview' : page === 'duplicates' ? 'Duplicates' : page === 'classification' ? 'AI classification' : page === 'review' ? 'Review' : 'Copy export'}</span><span className="badge">MILESTONE 06</span></header>
+      <header><span>Workspace <span className="slash">/</span> {page === 'overview' ? 'Overview' : page === 'duplicates' ? 'Duplicates' : page === 'classification' ? 'AI classification' : page === 'review' ? 'Review' : 'Copy export'}</span><span className="badge">MILESTONE 07</span></header>
       <div className="mobile-view-switch" aria-label="Workspace view">
-        <button type="button" className={page === 'overview' ? 'selected' : ''} onClick={() => setPage('overview')}>Overview</button>
-        <button type="button" className={page === 'duplicates' ? 'selected' : ''} onClick={() => setPage('duplicates')}>Duplicates</button>
-        <button type="button" className={page === 'classification' ? 'selected' : ''} onClick={() => setPage('classification')}>AI</button>
-        <button type="button" className={page === 'review' ? 'selected' : ''} onClick={() => setPage('review')}>Review</button>
-        <button type="button" className={page === 'export' ? 'selected' : ''} onClick={() => setPage('export')}>Export</button>
+        <a className={page === 'overview' ? 'selected' : ''} href={routeHash('overview')}>Overview</a>
+        <a className={page === 'duplicates' ? 'selected' : ''} href={routeHash('duplicates')}>Duplicates</a>
+        <a className={page === 'classification' ? 'selected' : ''} href={routeHash('classification')}>AI</a>
+        <a className={page === 'review' ? 'selected' : ''} href={routeHash('review')}>Review</a>
+        <a className={page === 'export' ? 'selected' : ''} href={routeHash('export')}>Export</a>
       </div>
-      {page === 'duplicates' ? <Duplicates/> : page === 'classification' ? <Classification model={settings?.ollama.model ?? ''} endpoint={settings?.ollama.url ?? ''}/> : page === 'review' ? <Review/> : page === 'export' ? <Exports/> : <>
+      {page === 'duplicates' ? <Duplicates/> : page === 'classification' ? <Classification model={settings?.ollama.model ?? ''} endpoint={settings?.ollama.url ?? ''}/> : page === 'review' ? <Review detailHash={route.detail} onDetailChange={value=>setDetail('review',value)}/> : page === 'export' ? <Exports detailId={route.detail} onDetailChange={value=>setDetail('export',value)}/> : <>
       <section className="intro"><div className="eyebrow">A LITTLE LESS CLUTTER. A LOT MORE MEANING.</div>
         <h1>Make room for the moments.</h1>
         <p>A thoughtful home for sorting your photo library. Start scanning your photo library safely, then browse filenames, metadata and thumbnails.</p>

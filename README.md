@@ -1,6 +1,6 @@
 # PhotoSift — Release 1
 
-Local photo decluttering with a persistent read-only inventory. **Current milestone: M6 (copy-only export with explicit approval).**
+Local photo decluttering with a persistent read-only inventory. **Current milestone: M7 (navigation and safe review selection).**
 M2 provides scans and image previews. M3 adds exact duplicates. M4 adds user-initiated Ollama classification with durable queues and validated per-content results. M5 adds human review. M6 adds frozen plans, explicit approval, verified copying and rollback.
 
 ## Accepted architecture
@@ -273,3 +273,19 @@ M6 adds immutable migration 002_export_metadata.sql. Run backend tests and front
 M6 stores the originating filesystem device and inode for every newly created, hash-verified export output (migration 003). Before rollback, it checks both the expected content hash and this original filesystem identity. An output replaced with another file, **even if the replacement contains identical bytes**, is never automatically removed. If an old M6 export was created before this identity journal existed, PhotoSift conservatively refuses to delete its outputs automatically and reports a partial rollback for manual inspection. This is intentionally safer than interpreting matching hashes as proof of ownership.
 
 To use M6, configure the optional export mount separately. Creating a plan does not copy files; approval must use the exact phrase COPY APPROVED. Both originals and the existing export destination must remain on independently mounted paths. Never mount an export directory within the source library or application data. A plan freezes its file list and validates source hashes at execution.
+
+## M7 — navigation and review stability
+
+All views use bookmarked hash links (for example, `#/review`, `#/review/<64-character SHA-256>`, and `#/export/<32-character run id>`). Browser back/forward, refresh and copied links preserve the selected review image or export run, including on deployments where FastAPI serves only the root SPA entrypoint. Filters remain local to the review page; changing filters explicitly invalidates selections.
+
+The Review page distinguishes **current-page selection** from **all matching selection**. Selecting all matching requests a server-side sorted SHA-256 fingerprint of the exact current matching content set. The UI freezes this selection with its filters and match count. Any filter change clears it. The backend checks the fingerprint in the same SQLite write transaction as a bulk review update; if the membership changes—even with the same number of matches—the request fails with HTTP 409 and no changes or audit rows are written. Bulk review and M6 export safeguards are otherwise unchanged. Only explicit human review operations write decisions.
+
+The Review and Exports pages abort obsolete poll requests and ignore stale responses. A refresh of the same detail item does not unnecessarily erase its current preview. Non-JSON server errors include the endpoint and HTTP status. This implementation uses no new browser storage or external router dependency.
+
+### M7 validation
+
+- `cd frontend && npm test` — built-in Node tests for hash navigation, stale-request gating, immutable selection scopes, and server error handling
+- `cd frontend && npm run build` — TypeScript and Vite build
+- `python -m pytest -q` — backend regression tests, including frozen scope membership and M6 export/rollback invariants
+
+M8 is the next separate security and correctness audit: filesystem races, export rollback invariants, concurrent jobs, and review consistency. M7 makes no changes to original files, source mounts, or approved export actions.

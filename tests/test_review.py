@@ -152,3 +152,65 @@ def test_csv_export_and_paged_duplicate_locations(collection):
         detail=client.get("/api/reviews/"+first).json()
         assert detail["copy_total"]==2
         assert client.get("/api/reviews/"+first+"/copies?limit=201").status_code==422
+
+
+def test_frozen_bulk_scope_commits_only_expected_matching_set(collection):
+    settings, a, b, roots, first, second = collection
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns)
+              for root in (a, b) for p in root.iterdir()}
+    with TestClient(create_app(settings)) as client:
+        snapshot = client.get("/api/reviews/selection",
+                              params={"duplicates_only": True}).json()
+        assert snapshot["total"] == 1
+        assert len(snapshot["digest"]) == 64
+        result = client.post("/api/reviews/bulk", json={
+            "filters": {"duplicates_only": True},
+            "expected_scope_digest": snapshot["digest"],
+            "decision": "keep"})
+        assert result.status_code == 200
+        assert result.json() == {"matched": 1, "changed": 1}
+        assert client.get("/api/reviews/audit").json()["total"] == 1
+        changed = client.post("/api/reviews/bulk", json={
+            "filters": {"duplicates_only": True},
+            "expected_scope_digest": "a"*64,
+            "decision": "clutter"})
+        assert changed.status_code == 409
+        assert client.get("/api/reviews/summary").json()["clutter"] == 0
+        assert client.get("/api/reviews/audit").json()["total"] == 1
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in before} == before
+
+
+def test_frozen_scope_detects_replaced_membership_even_when_count_unchanged(collection):
+    settings, a, b, roots, first, second = collection
+    with TestClient(create_app(settings)) as client:
+        assert client.post("/api/reviews/bulk", json={
+            "hashes": [first], "category_override": "screenshot"}).status_code == 200
+        snapshot = client.get("/api/reviews/selection",
+                              params={"category": "screenshot"}).json()
+        assert snapshot["total"] == 1
+        assert client.post("/api/reviews/bulk", json={
+            "hashes": [first], "category_override": "other"}).status_code == 200
+        assert client.post("/api/reviews/bulk", json={
+            "hashes": [second], "category_override": "screenshot"}).status_code == 200
+        assert client.get("/api/reviews/selection",
+                          params={"category": "screenshot"}).json()["total"] == 1
+        before = client.get("/api/reviews/audit").json()["total"]
+        result = client.post("/api/reviews/bulk", json={
+            "filters": {"category": "screenshot"},
+            "expected_scope_digest": snapshot["digest"],
+            "decision": "clutter"})
+        assert result.status_code == 409
+        assert client.get("/api/reviews/summary").json()["clutter"] == 0
+        assert client.get("/api/reviews/audit").json()["total"] == before
+
+
+def test_scope_fingerprint_validates_filter_only(collection):
+    settings, a, b, roots, first, second = collection
+    with TestClient(create_app(settings)) as client:
+        assert client.post("/api/reviews/bulk", json={
+            "hashes": [first], "expected_scope_digest": "b"*64,
+            "decision": "keep"}).status_code == 422
+        assert client.get("/api/reviews/selection",
+                          params={"date_from": "2027-01-01",
+                                  "date_to": "2026-01-01"}).status_code == 422

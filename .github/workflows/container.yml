@@ -37,6 +37,9 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci --no-audit --no-fund
+      - name: Test URL navigation, stale responses and selection helpers
+        working-directory: frontend
+        run: npm test
       - name: Check TypeScript and build frontend
         working-directory: frontend
         run: npm run build
@@ -101,6 +104,8 @@ jobs:
               python -c 'import json,sys; d=json.load(sys.stdin); assert d["total"]==0 and d["items"]==[],d'
             curl --silent --show-error --fail http://127.0.0.1:8765/api/reviews/audit | \
               python -c 'import json,sys; d=json.load(sys.stdin); assert d["total"]==0,d'
+            curl --silent --show-error --fail http://127.0.0.1:8765/api/reviews/selection | \
+              python -c 'import json,sys; d=json.load(sys.stdin); assert d["total"]==0 and len(d["digest"])==64,d'
             [ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
               http://127.0.0.1:8765/api/reviews/invalid)" = "404" ]
           }

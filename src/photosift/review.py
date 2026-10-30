@@ -1,6 +1,7 @@
 """M5 content-level review, filters, corrections and audit. No source-file writes."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -42,6 +43,7 @@ class ReviewChange(BaseModel):
     decision: Decision | None = None
     category_override: Category | None = None
     clear_category: bool = False
+    expected_scope_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_change(self):
@@ -54,6 +56,8 @@ class ReviewChange(BaseModel):
                 raise ValueError("Invalid content hash")
         if self.decision is None and self.category_override is None and not self.clear_category:
             raise ValueError("No changes requested")
+        if self.expected_scope_digest is not None and self.filters is None:
+            raise ValueError("Scope fingerprint requires an all-matching filter selection")
         if self.clear_category and self.category_override is not None:
             raise ValueError("Cannot both clear and set category")
         return self
@@ -167,6 +171,27 @@ def review_page(db: sqlite3.Connection, filters: ReviewFilters, limit: int, offs
         raise
 
 
+def review_selection(db: sqlite3.Connection, filters: ReviewFilters) -> dict:
+    """Fingerprint the exact active content set, not merely the matching count."""
+    sql, params = _query(filters)
+    db.execute("BEGIN")
+    try:
+        digest = hashlib.sha256()
+        count = 0
+        for row in db.execute("SELECT q.content_hash FROM (" + sql +
+                              ") q ORDER BY q.content_hash LIMIT ?", (*params, MAX_BULK + 1)):
+            count += 1
+            if count > MAX_BULK:
+                raise ValueError("Too many matching images; narrow the filters")
+            digest.update(row[0].encode("ascii"))
+            digest.update(b"\n")
+        db.commit()
+        return {"total": count, "digest": digest.hexdigest()}
+    except Exception:
+        db.rollback()
+        raise
+
+
 def review_summary(db: sqlite3.Connection) -> dict:
     sql, _ = _query(ReviewFilters())
     row = db.execute("SELECT COUNT(*) AS total, " +
@@ -243,6 +268,13 @@ def apply_review(db: sqlite3.Connection, change: ReviewChange) -> dict:
             if len(valid) != len(change.hashes):
                 raise LookupError("One or more selected images are no longer eligible")
             targets = change.hashes
+        if change.expected_scope_digest is not None:
+            digest = hashlib.sha256()
+            for target in targets:
+                digest.update(target.encode("ascii"))
+                digest.update(b"\n")
+            if digest.hexdigest() != change.expected_scope_digest:
+                raise LookupError("Matching photo set changed. Select all matching again")
         changed = 0
         for digest in targets:
             record = db.execute("SELECT decision,category_override FROM reviews WHERE content_hash=?",

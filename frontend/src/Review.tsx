@@ -1,6 +1,8 @@
 import {useEffect,useRef,useState} from 'react';
 import {VirtuosoGrid} from 'react-virtuoso';
 import './review.css';
+import {createLatestGate,fetchJson,makeScope,sameScope} from './state.mjs';
+import type {Scope} from './state.mjs';
 
 type Decision='undecided'|'keep'|'clutter'|'review_later';
 type Category='personal_photo'|'screenshot'|'meme_graphic'|'document'|'other';
@@ -38,19 +40,13 @@ function match(filters:Filters):Record<string,string|boolean|number>{
    value==='true':key==='root_id'?Number(value):value;
  }return result;
 }
-async function request<T>(url:string,options?:RequestInit):Promise<T>{
- const response=await fetch(url,options);
- if(!response.ok){
-  const body=await response.json().catch(()=>({detail:'Request failed'})) as {detail?:unknown};
-  throw new Error(typeof body.detail==='string'?body.detail:'Request failed ('+response.status+')');
- }
- return response.json() as Promise<T>;
-}
+async function request<T>(url:string,init?:RequestInit):Promise<T>{return fetchJson<T>(url,init);}
 const post=(value:object):RequestInit=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
 const editable=(t:EventTarget|null)=>t instanceof HTMLElement &&
  (['INPUT','TEXTAREA','SELECT'].includes(t.tagName)||t.isContentEditable);
 
-export default function Review(){
+export default function Review({detailHash,onDetailChange}:{detailHash:string|null;onDetailChange:(hash:string|null)=>void}){
+ const selected=detailHash;
  const [filters,setFilters]=useState<Filters>(initial);
  const [searchDraft,setSearchDraft]=useState('');
  const [offset,setOffset]=useState(0);
@@ -58,8 +54,9 @@ export default function Review(){
  const [stats,setStats]=useState<Summary>(empty);
  const [roots,setRoots]=useState<Root[]>([]);
  const [checked,setChecked]=useState<Set<string>>(new Set());
- const [allMatching,setAllMatching]=useState(false);
- const [selected,setSelected]=useState<string|null>(null);
+ const [allScope,setAllScope]=useState<Scope|null>(null);
+ const [scopeBusy,setScopeBusy]=useState(false);
+
  const [detail,setDetail]=useState<Detail|null>(null);
  const [moreCopies,setMoreCopies]=useState<Copy[]>([]);
  const [copiesBusy,setCopiesBusy]=useState(false);
@@ -69,35 +66,55 @@ export default function Review(){
  const [busy,setBusy]=useState(false);
  const [refresh,setRefresh]=useState(0);
  const lastIndex=useRef<number|null>(null);
+ const filtersRef=useRef(filters);
+ const selectedRef=useRef(selected);selectedRef.current=selected;
+ const scopeRef=useRef(allScope);scopeRef.current=allScope;
+ const selectionGate=useRef(createLatestGate());
+ useEffect(()=>()=>selectionGate.current.cancel(),[]);
 
  function change(key:keyof Filters,value:string){
-  setFilters(old=>({...old,[key]:value}));setOffset(0);setChecked(new Set());
-  setAllMatching(false);setSelected(null);lastIndex.current=null;
+  const next={...filtersRef.current,[key]:value};filtersRef.current=next;
+  selectionGate.current.cancel();setScopeBusy(false);setFilters(next);setOffset(0);setChecked(new Set());setAllScope(null);lastIndex.current=null;
  }
- useEffect(()=>{const timer=setTimeout(()=>change('search',searchDraft),300);return()=>clearTimeout(timer);},[searchDraft]);
  useEffect(()=>{
-  let alive=true;
+  if(searchDraft===filters.search)return;
+  const timer=setTimeout(()=>change('search',searchDraft),300);
+  return()=>clearTimeout(timer);
+ },[searchDraft,filters.search]);
+ useEffect(()=>{
+  const gate=createLatestGate();
   async function load(){
+   const ticket=gate.next();
    const query=new URLSearchParams({offset:String(offset),limit:'120'});
    Object.entries(match(filters)).forEach(([key,value])=>query.set(key,String(value)));
    try{
     const [items,summary,libraries]=await Promise.all([
-     request<Page>('/api/reviews?'+query),request<Summary>('/api/reviews/summary'),
-     request<{roots:Root[]}>('/api/inventory')]);
-    if(alive){setPage(items);setStats(summary);setRoots(libraries.roots);setError('');}
-   }catch(exc){if(alive)setError(exc instanceof Error?exc.message:'Could not load review grid');}
+     request<Page>('/api/reviews?'+query,{signal:ticket.signal}),
+     request<Summary>('/api/reviews/summary',{signal:ticket.signal}),
+     request<{roots:Root[]}>('/api/inventory',{signal:ticket.signal})]);
+    if(ticket.isCurrent()){
+     setPage(items);setStats(summary);setRoots(libraries.roots);setError('');
+     if(scopeRef.current && scopeRef.current.total!==items.total){
+      setAllScope(null);setNotice('Matching result count changed. Select all matching again.');
+     }
+    }
+   }catch(e){if(ticket.isCurrent())setError(e instanceof Error?e.message:'Cannot load review grid');}
   }
   void load();const timer=setInterval(()=>void load(),10000);
-  return()=>{alive=false;clearInterval(timer);};
+  return()=>{clearInterval(timer);gate.cancel();};
  },[filters,offset,refresh]);
  useEffect(()=>{
-  setMoreCopies([]);
-  if(!selected){setDetail(null);return;}
-  let alive=true;
-  setDetail(null);
-  void request<Detail>('/api/reviews/'+selected).then(d=>{if(alive)setDetail(d);})
-   .catch(exc=>{if(alive)setError(exc instanceof Error?exc.message:'Could not open image');});
-  return()=>{alive=false;};
+  const gate=createLatestGate();setMoreCopies([]);setCopiesBusy(false);
+  if(!selected){setDetail(null);return()=>gate.cancel();}
+  setDetail(previous=>previous?.content_hash===selected?previous:null);
+  async function load(){
+   const ticket=gate.next();
+   try{
+    const next=await request<Detail>('/api/reviews/'+selected,{signal:ticket.signal});
+    if(ticket.isCurrent())setDetail(next);
+   }catch(e){if(ticket.isCurrent())setError(e instanceof Error?e.message:'Cannot load image detail');}
+  }
+  void load();return()=>gate.cancel();
  },[selected,refresh]);
 
  async function loadMoreCopies(){
@@ -106,13 +123,14 @@ export default function Review(){
   try{
    const next=await request<{items:Copy[]}>('/api/reviews/'+detail.content_hash+
     '/copies?limit=100&offset='+(detail.copies.length+moreCopies.length));
-   setMoreCopies(previous=>[...previous,...next.items]);
-  }catch(exc){setError(exc instanceof Error?exc.message:'Cannot load more file locations');}
-  finally{setCopiesBusy(false);}
+   if(selectedRef.current===detail.content_hash)setMoreCopies(previous=>[...previous,...next.items]);
+  }catch(exc){if(detail && selectedRef.current===detail.content_hash)
+   setError(exc instanceof Error?exc.message:'Cannot load more file locations');}
+  finally{if(detail && selectedRef.current===detail.content_hash)setCopiesBusy(false);}
  }
  function toggle(digest:string,index:number,shift:boolean){
   const next=new Set(checked);
-  if(allMatching){setAllMatching(false);next.clear();}
+  if(allScope){setAllScope(null);next.clear();}
   if(shift&&lastIndex.current!==null){
    const add=!next.has(digest);
    for(let i=Math.min(index,lastIndex.current);i<=Math.max(index,lastIndex.current);i++){
@@ -124,21 +142,46 @@ export default function Review(){
  function move(direction:number){
   const index=page.items.findIndex(x=>x.content_hash===selected);
   const next=page.items[index+direction];
-  if(next)setSelected(next.content_hash);
+  if(next)onDetailChange(next.content_hash);
+ }
+ async function selectAllMatching(){
+  setScopeBusy(true);setError('');
+  const selectedFilters=match(filtersRef.current);
+  const snapshotKey=JSON.stringify(selectedFilters);
+  const ticket=selectionGate.current.next();
+  const query=new URLSearchParams();
+  Object.entries(selectedFilters).forEach(([key,value])=>query.set(key,String(value)));
+  try{
+   const result=await request<{total:number;digest:string}>('/api/reviews/selection?'+query,{signal:ticket.signal});
+   if(!ticket.isCurrent()||JSON.stringify(match(filtersRef.current))!==snapshotKey)return;
+   setChecked(new Set());lastIndex.current=null;
+   if(!result.total){setAllScope(null);setNotice('No matching images.');return;}
+   setAllScope(makeScope(selectedFilters,result.total,result.digest));
+   setNotice('Frozen selection of '+number(result.total)+' matching images. Changing filters clears it.');
+  }catch(e){if(ticket.isCurrent())setError(e instanceof Error?e.message:'Could not freeze selection');}
+  finally{if(ticket.isCurrent())setScopeBusy(false);}
  }
  async function update(change:{decision?:Decision;category_override?:Category;clear_category?:boolean},one?:string){
-  const hashes=one?[one]:[...checked];
-  if(!one&&!allMatching&&!hashes.length){setError('Select at least one image.');return;}
-  const affected=one?1:allMatching?page.total:hashes.length;
-  if(!one&&!window.confirm('Apply changes to '+number(affected)+' selected images? Original files stay untouched.'))return;
+  const scope=allScope,hashes=one?[one]:[...checked];
+  if(!one&&searchDraft!==filtersRef.current.search){
+   setAllScope(null);setChecked(new Set());setError('Search is changing. Select images again.');return;
+  }
+  if(!one&&!scope&&!hashes.length){setError('Select at least one image.');return;}
+  if(!one&&scope&&!sameScope(scope,match(filtersRef.current))){
+   setAllScope(null);setError('Filters changed. Select all matching again.');return;
+  }
+  const total=one?1:scope?scope.total:hashes.length;
+  if(!one&&!window.confirm('Apply changes to '+number(total)+' '+
+      (scope?'frozen matching':'selected')+' images? Originals remain untouched.'))return;
   setBusy(true);setError('');setNotice('');
   try{
-   const payload={...change,...(!one&&allMatching?{filters:match(filters)}:{hashes})};
+   const payload={...change,...(!one&&scope?
+     {filters:scope.filters,expected_scope_digest:scope.digest}:{hashes})};
    const result=await request<{matched:number;changed:number}>('/api/reviews/bulk',post(payload));
    setNotice(number(result.changed)+' review records updated ('+number(result.matched)+' matched).');
-   if(!one){setAllMatching(false);setChecked(new Set());lastIndex.current=null;}
+   if(!one){setAllScope(null);setChecked(new Set());lastIndex.current=null;}
    setRefresh(v=>v+1);
-  }catch(exc){setError(exc instanceof Error?exc.message:'Review update failed');}
+  }catch(e){setError(e instanceof Error?e.message:'Review update failed');if(scope)setAllScope(null);}
   finally{setBusy(false);}
  }
  useEffect(()=>{
@@ -146,14 +189,16 @@ export default function Review(){
   function keyboard(event:KeyboardEvent){
    if(editable(event.target)||event.altKey||event.ctrlKey||event.metaKey||event.repeat)return;
    const key=event.key.toLowerCase();
-   if(key==='escape'){event.preventDefault();setSelected(null);return;}
+   if(key==='escape'){event.preventDefault();onDetailChange(null);return;}
    if(key==='arrowleft'||key==='arrowright'){event.preventDefault();move(key==='arrowright'?1:-1);return;}
    const decision:Record<string,Decision>={k:'keep',c:'clutter',l:'review_later',u:'undecided'};
    if(!busy&&decision[key]){event.preventDefault();void update({decision:decision[key]},selected!);}
   }
   window.addEventListener('keydown',keyboard);return()=>window.removeEventListener('keydown',keyboard);
- },[selected,page.items,busy,checked,allMatching,filters]);
- const count=allMatching?page.total:checked.size;
+ },[selected,page.items,busy,checked,allScope,filters]);
+ const count=allScope?allScope.total:checked.size;
+ const pendingSearch=searchDraft!==filters.search;
+ const visibleDetail=detail?.content_hash===selected?detail:null;
  const dropdown=(label:string,key:keyof Filters,options:[string,string][])=>(
   <label key={key}>{label}<select value={filters[key]} onChange={e=>change(key,e.target.value)}>
    {options.map(([value,name])=><option value={value} key={value}>{name}</option>)}</select></label>);
@@ -167,7 +212,10 @@ export default function Review(){
    .map(key=><div className="panel" key={key}><small>{text(key)}</small><strong>{number(stats[key])}</strong></div>)}</div>
   <div className="panel review-toolbar">
    <div className="review-filters">
-    <label>Find filename or folder<input value={searchDraft} placeholder="Search paths" onChange={e=>setSearchDraft(e.target.value)}/></label>
+    <label>Find filename or folder<input value={searchDraft} placeholder="Search paths" onChange={e=>{
+    setSearchDraft(e.target.value);selectionGate.current.cancel();setScopeBusy(false);
+    setAllScope(null);setChecked(new Set());
+   }}/></label>
     {dropdown('Category','category',[['','All categories'],['unclassified','Unclassified'],...categories.map(c=>[c,text(c)] as [string,string])])}
     {dropdown('Decision','review_status',[['','All'],['undecided','Undecided'],['keep','Keep'],['clutter','Clutter'],['review_later','Review later']])}
     {dropdown('AI confidence','uncertain',[['','Any'],['true','Uncertain'],['false','Confident']])}
@@ -182,14 +230,14 @@ export default function Review(){
    </div>
    <div className="review-select">
     <span>{number(page.total)} matching images</span>
-    <button onClick={()=>{setChecked(new Set(page.items.map(p=>p.content_hash)));setAllMatching(false);}}>Select page</button>
-    <button onClick={()=>{setChecked(new Set());setAllMatching(true);}}>Select all matching ({number(page.total)})</button>
-    <button onClick={()=>{setChecked(new Set());setAllMatching(false);}}>Clear selection</button>
-    <button onClick={()=>{setFilters(initial);setSearchDraft('');setOffset(0);setAllMatching(false);setChecked(new Set());}}>Reset filters</button>
+    <button disabled={busy||scopeBusy||pendingSearch||!page.items.length} onClick={()=>{setChecked(new Set(page.items.map(p=>p.content_hash)));setAllScope(null);}}>Select page</button>
+    <button disabled={busy||scopeBusy||pendingSearch||!page.total} onClick={()=>void selectAllMatching()}>{scopeBusy?'Selecting…':'Select all matching ('+number(page.total)+')'}</button>
+    <button onClick={()=>{selectionGate.current.cancel();setScopeBusy(false);setChecked(new Set());setAllScope(null);}}>Clear selection</button>
+    <button onClick={()=>{filtersRef.current=initial;selectionGate.current.cancel();setScopeBusy(false);setFilters(initial);setSearchDraft('');setOffset(0);setAllScope(null);setChecked(new Set());}}>Reset filters</button>
     <a className="review-export" href="/api/reviews/audit.csv" download>Export corrections CSV</a>
    </div>
   </div>
-  {count>0&&<div className="panel review-bulk"><strong>{number(count)} selected</strong>
+  {count>0&&<div className="panel review-bulk"><strong>{allScope?'All matching '+number(count)+' · frozen scope':number(count)+' from current page selected'}</strong>
    <div className="review-actions">
     <button disabled={busy} onClick={()=>void update({decision:'keep'})}>Keep</button>
     <button disabled={busy} onClick={()=>void update({decision:'clutter'})}>Clutter</button>
@@ -206,8 +254,8 @@ export default function Review(){
   {page.total===0?<div className="panel review-empty">No photos match. Scan your library or change filters.</div>:
    <VirtuosoGrid style={{height:'68vh',minHeight:320}} className="review-scroller"
     data={page.items} listClassName="review-grid" itemClassName="review-grid-item"
-    itemContent={(index,item)=><article className={'panel review-tile '+(checked.has(item.content_hash)||allMatching?'checked':'')} key={item.content_hash}>
-     <button className="review-open" onClick={()=>setSelected(item.content_hash)}>
+    itemContent={(index,item)=><article className={'panel review-tile '+(checked.has(item.content_hash)||Boolean(allScope)?'checked':'')} key={item.content_hash}>
+     <button className="review-open" onClick={()=>onDetailChange(item.content_hash)}>
       <div className="review-thumbnail">{item.thumbnail_url?<img src={item.thumbnail_url} alt="" loading="lazy"/>:'No preview'}
        {item.copy_count>1&&<span className="review-copy-count">{item.copy_count} copies</span>}</div>
       <div className="review-tile-info"><strong>{item.sample_path.split('/').pop()}</strong>
@@ -215,54 +263,54 @@ export default function Review(){
        <span className={'review-decision review-'+item.decision}>{text(item.decision)}</span></div>
      </button>
      <button className="review-check" aria-label={'Select '+item.sample_path}
-      aria-pressed={checked.has(item.content_hash)||allMatching} onClick={e=>toggle(item.content_hash,index,e.shiftKey)}>
-      {checked.has(item.content_hash)||allMatching?'✓':'+'}</button>
+      aria-pressed={checked.has(item.content_hash)||Boolean(allScope)} onClick={e=>toggle(item.content_hash,index,e.shiftKey)}>
+      {checked.has(item.content_hash)||Boolean(allScope)?'✓':'+'}</button>
     </article>}/>}
-  <div className="review-pager"><button disabled={offset===0} onClick={()=>{setOffset(Math.max(0,offset-120));setChecked(new Set());setAllMatching(false);}}>Previous</button>
+  <div className="review-pager"><button disabled={offset===0} onClick={()=>{setOffset(Math.max(0,offset-120));setChecked(new Set());setAllScope(null);}}>Previous</button>
    <span>{page.total?number(offset+1)+'–'+number(Math.min(offset+120,page.total))+' of '+number(page.total):'0 images'}</span>
-   <button disabled={offset+120>=page.total} onClick={()=>{setOffset(offset+120);setChecked(new Set());setAllMatching(false);}}>Next</button></div>
-  {selected&&<div className="review-shade" onClick={()=>setSelected(null)}>
+   <button disabled={offset+120>=page.total} onClick={()=>{setOffset(offset+120);setChecked(new Set());setAllScope(null);}}>Next</button></div>
+  {selected&&<div className="review-shade" onClick={()=>onDetailChange(null)}>
    <div className="review-dialog" role="dialog" aria-modal="true" aria-label="Review image details" onClick={e=>e.stopPropagation()}>
-    <div className="review-dialog-head"><h2>Review image</h2><button aria-label="Close details" onClick={()=>setSelected(null)}>×</button></div>
-    {!detail?<p>Loading image details…</p>:<>
-     <div className="review-preview">{detail.preview_url?<img src={detail.preview_url} alt={detail.sample_path}/>:'Preview unavailable'}</div>
+    <div className="review-dialog-head"><h2>Review image</h2><button aria-label="Close details" onClick={()=>onDetailChange(null)}>×</button></div>
+    {!visibleDetail?<p>Loading image details…</p>:<>
+     <div className="review-preview">{visibleDetail.preview_url?<img src={visibleDetail.preview_url} alt={visibleDetail.sample_path}/>:'Preview unavailable'}</div>
      <div className="review-navigation"><button onClick={()=>move(-1)}>← Previous</button>
-      <strong title={detail.sample_path}>{detail.sample_path.split('/').pop()}</strong>
+      <strong title={visibleDetail.sample_path}>{visibleDetail.sample_path.split('/').pop()}</strong>
       <button onClick={()=>move(1)}>Next →</button></div>
      <div className="review-detail-actions">
       {([['keep','K · Keep'],['clutter','C · Clutter'],['review_later','L · Later'],['undecided','U · Reset']] as [Decision,string][])
-       .map(([value,label])=><button key={value} disabled={busy} onClick={()=>void update({decision:value},detail.content_hash)}>{label}</button>)}
+       .map(([value,label])=><button key={value} disabled={busy} onClick={()=>void update({decision:value},visibleDetail.content_hash)}>{label}</button>)}
      </div>
      <label className="review-correct">Correct category<select disabled={busy}
-      value={detail.category_override||'__ai__'} onChange={e=>void update(e.target.value==='__ai__'?
-       {clear_category:true}:{category_override:e.target.value as Category},detail.content_hash)}>
-      <option value="__ai__">Use AI suggestion ({text(detail.ai_category||'unclassified')})</option>
+      value={visibleDetail.category_override||'__ai__'} onChange={e=>void update(e.target.value==='__ai__'?
+       {clear_category:true}:{category_override:e.target.value as Category},visibleDetail.content_hash)}>
+      <option value="__ai__">Use AI suggestion ({text(visibleDetail.ai_category||'unclassified')})</option>
       {categories.map(c=><option key={c} value={c}>{text(c)}</option>)}</select></label>
      <div className="review-metadata">
-      <p><b>Decision:</b> {text(detail.decision)} · <b>Category:</b> {text(detail.effective_category||'unclassified')}</p>
-      <p><b>AI:</b> {detail.confidence===null?'Not classified':Math.round(detail.confidence*100)+'% confidence'}
-       {detail.uncertain?' · Uncertain':''} · {detail.possibly_important?'Possibly important':'Not flagged'}</p>
-      <p><b>Explanation:</b> {detail.reason||'No AI explanation'} {detail.importance_reason||''}</p>
-      <p><b>Captured:</b> {detail.sample_capture_time||'Unknown'} · <b>Size:</b> {size(detail.size_bytes)}</p>
-      <p><b>Camera:</b> {[detail.camera_make,detail.camera_model].filter(Boolean).join(' ')||'Unknown'}
-       {' '}· <b>Resolution:</b> {detail.width??'?'} × {detail.height??'?'}</p>
-      <p><b>Flags:</b> {detail.blurry?'Possibly blurry · ':''}{detail.low_resolution?'Low resolution':'No low-resolution flag'}</p>
-      <p><b>Model:</b> {detail.model_tag||'Not classified'}</p>
+      <p><b>Decision:</b> {text(visibleDetail.decision)} · <b>Category:</b> {text(visibleDetail.effective_category||'unclassified')}</p>
+      <p><b>AI:</b> {visibleDetail.confidence===null?'Not classified':Math.round(visibleDetail.confidence*100)+'% confidence'}
+       {visibleDetail.uncertain?' · Uncertain':''} · {visibleDetail.possibly_important?'Possibly important':'Not flagged'}</p>
+      <p><b>Explanation:</b> {visibleDetail.reason||'No AI explanation'} {visibleDetail.importance_reason||''}</p>
+      <p><b>Captured:</b> {visibleDetail.sample_capture_time||'Unknown'} · <b>Size:</b> {size(visibleDetail.size_bytes)}</p>
+      <p><b>Camera:</b> {[visibleDetail.camera_make,visibleDetail.camera_model].filter(Boolean).join(' ')||'Unknown'}
+       {' '}· <b>Resolution:</b> {visibleDetail.width??'?'} × {visibleDetail.height??'?'}</p>
+      <p><b>Flags:</b> {visibleDetail.blurry?'Possibly blurry · ':''}{visibleDetail.low_resolution?'Low resolution':'No low-resolution flag'}</p>
+      <p><b>Model:</b> {visibleDetail.model_tag||'Not classified'}</p>
      </div>
-     <h3>File locations ({detail.copy_total})</h3>
-     <div className="review-locations">{[...detail.copies,...moreCopies].map(c=><div key={c.id}>
+     <h3>File locations ({visibleDetail.copy_total})</h3>
+     <div className="review-locations">{[...visibleDetail.copies,...moreCopies].map(c=><div key={c.id}>
       <small>{c.missing?'Missing':!c.root_enabled?'Disabled library':'Present at last scan'}</small>
       <code>{c.root_path}/{c.relative_path}</code></div>)}</div>
-     {detail.copies.length+moreCopies.length<detail.copy_total&&<button className="review-load-copies" disabled={copiesBusy}
+     {visibleDetail.copies.length+moreCopies.length<visibleDetail.copy_total&&<button className="review-load-copies" disabled={copiesBusy}
       onClick={()=>void loadMoreCopies()}>{copiesBusy?'Loading…':'Load more file locations'}</button>}
      <h3>Review history (latest 40)</h3>
-     <div className="review-history">{detail.history.length===0?<p>No manual changes yet.</p>:
-      detail.history.map(entry=><p key={entry.id}>{entry.created_at} · {text(entry.before.decision)}
+     <div className="review-history">{visibleDetail.history.length===0?<p>No manual changes yet.</p>:
+      visibleDetail.history.map(entry=><p key={entry.id}>{entry.created_at} · {text(entry.before.decision)}
        {' → '}{text(entry.after.decision)}
        {entry.before.category_override!==entry.after.category_override?' · Category updated':''}</p>)}</div>
      <small className="review-help">Keyboard: K Keep · C Clutter · L Later · U Reset · ←/→ Navigate · Esc Close</small>
     </>}
    </div></div>}
-  <p className="review-safety">Only PhotoSift review records change. Original photographs are never edited or deleted. Export is disabled until M6.</p>
+  <p className="review-safety">Only PhotoSift review records change. Original photographs are never edited or deleted. Exports require explicit M6 approval.</p>
  </section>;
 }
