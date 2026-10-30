@@ -1,0 +1,37 @@
+# Deploy the GitHub Actions image without building on Zima.
+name: photosift
+services:
+  photosift:
+    image: ghcr.io/snehithgit/declutter:${PHOTOSIFT_IMAGE_TAG:-latest}
+    container_name: photosift
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${PHOTOSIFT_BIND_IP:-127.0.0.1}:8765:8765"
+    environment:
+      PHOTOSIFT_ALLOW_LAN: "1"
+      PHOTOSIFT_OLLAMA_URL: "${OLLAMA_URL:?Set OLLAMA_URL to your laptop LAN endpoint}"
+    volumes:
+      - type: bind
+        source: "${PHOTOSIFT_DATA_PATH:?Set PHOTOSIFT_DATA_PATH to local Zima storage}"
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${PHOTO_LIBRARY_PATH:?Set PHOTO_LIBRARY_PATH to your library folder}"
+        target: /library
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

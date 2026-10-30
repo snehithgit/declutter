@@ -1,0 +1,11 @@
+.venv/
+data/
+config.toml
+.env
+__pycache__/
+*.egg-info/
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+private-*
+*.log

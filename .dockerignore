@@ -1,0 +1,11 @@
+.venv
+.git
+data
+.env
+config.toml
+frontend/node_modules
+frontend/dist
+tests
+__pycache__
+*.egg-info
+private-*

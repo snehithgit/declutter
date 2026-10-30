@@ -1,0 +1,19 @@
+data_dir = "/data"
+library_roots = ["/library"]
+
+[server]
+host = "0.0.0.0"
+port = 8765
+
+[ollama]
+# Compose supplies PHOTOSIFT_OLLAMA_URL, pointing to the laptop's LAN address.
+url = "http://127.0.0.1:11434"
+model = "hf.co/ggml-org/vllm-d3-nano-GGUF:Q8_0"
+concurrency = 1
+
+[images]
+thumbnail_size = 256
+preview_size = 1024
+
+[classification]
+uncertainty_threshold = 0.6
