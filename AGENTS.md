@@ -17,3 +17,5 @@ The accepted architecture is Zima app/database/worker + laptop Ollama inference 
 - Frontend: `cd frontend`, `npm ci`, `npm run build`.
 - Start API + worker: `.venv\Scripts\python.exe -m photosift run --config config.toml`.
 - Use generated temporary images for later tests, never personal photos.
+
+- M6 rollback must confirm the recorded output filesystem device/inode and hash. Missing identity or replaced output is manual-recovery-only; never remove it automatically.

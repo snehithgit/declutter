@@ -266,3 +266,10 @@ Photos go under Organized/Photos/YYYY/YYYY-MM, documents under Organized/Documen
 - POST /api/exports/{id}/action: approve, retry, rollback, rollback_errors, retry_rollback or cancel plus exact confirmation phrase
 
 M6 adds immutable migration 002_export_metadata.sql. Run backend tests and frontend build before deployment. First test on a small reviewed sample; full exports may use significant space. GitHub commits do not automatically replace a running ZimaOS container.
+
+
+### Rollback identity hardening
+
+M6 stores the originating filesystem device and inode for every newly created, hash-verified export output (migration 003). Before rollback, it checks both the expected content hash and this original filesystem identity. An output replaced with another file, **even if the replacement contains identical bytes**, is never automatically removed. If an old M6 export was created before this identity journal existed, PhotoSift conservatively refuses to delete its outputs automatically and reports a partial rollback for manual inspection. This is intentionally safer than interpreting matching hashes as proof of ownership.
+
+To use M6, configure the optional export mount separately. Creating a plan does not copy files; approval must use the exact phrase COPY APPROVED. Both originals and the existing export destination must remain on independently mounted paths. Never mount an export directory within the source library or application data. A plan freezes its file list and validates source hashes at execution.

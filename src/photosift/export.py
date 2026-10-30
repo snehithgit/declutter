@@ -253,7 +253,7 @@ def _safe_destination(root: Path, destination: Path, create: bool = False) -> No
         raise ExportError("Destination is a symlink")
 
 
-def _copy_one(run_root: Path, row: sqlite3.Row) -> str:
+def _copy_one(run_root: Path, row: sqlite3.Row) -> tuple[str, int, int]:
     src = Path(row["source"])
     dst = Path(row["destination"])
     _safe_destination(run_root,dst,create=True)
@@ -283,8 +283,11 @@ def _copy_one(run_root: Path, row: sqlite3.Row) -> str:
         # Atomic create-without-overwrite: hard-link temp into final name on same volume.
         # If the process crashes between link and journal update, it will NOT delete
         # the unjournaled output; it reports a conflict for manual inspection.
+        # Capture the identity of the inode actually published, before linking.
+        # This prevents rollback from unlinking a replacement with identical bytes.
+        owned = tmp.stat(follow_symlinks=False)
         os.link(tmp,dst,follow_symlinks=False)
-        return row["expected_hash"]
+        return row["expected_hash"], owned.st_dev, owned.st_ino
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -299,7 +302,7 @@ def _csv_cell(value: object) -> object:
 def _write_manifest(run_root: Path, operations: list[dict]) -> None:
     _safe_destination(run_root.parent,run_root / "manifest.json",create=True)
     fields = ["source","destination","expected_hash","expected_size","category","decision",
-              "model_reason","capture_time","date_source","state","verified_hash","error"]
+              "model_reason","capture_time","date_source","state","verified_hash","error","output_device","output_inode"]
     records = [{k:item.get(k) for k in fields} for item in operations]
     for extension in ("json","csv"):
         target = run_root / ("manifest." + extension)
@@ -381,10 +384,11 @@ def run_export(settings: Settings, run_id: str, stop: Protocol) -> None:
             if src_row is None or _source(src_row["root_path"],src_row["relative_path"]) != Path(row["source"]):
                 raise ExportError("Source path changed or is no longer safe")
             _safe_destination(root,run_root / "manifest.json")
-            digest = _copy_one(run_root,row)
+            digest, device, inode = _copy_one(run_root,row)
             with connect(settings.data_dir) as db:
                 db.execute("""UPDATE export_operations SET state='done',created_by_export=1,verified_hash=?,
-                    updated_at=CURRENT_TIMESTAMP WHERE id=?""",(digest,row["id"]))
+                    output_device=?,output_inode=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                    (digest,device,inode,row["id"]))
         except Exception as exc:
             with connect(settings.data_dir) as db:
                 db.execute("UPDATE export_operations SET state='failed',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -416,7 +420,14 @@ def rollback_export(settings: Settings, run_id: str) -> None:
                     db.execute("UPDATE export_operations SET state='rolled_back',error=NULL,"
                                "updated_at=CURRENT_TIMESTAMP WHERE id=?", (row["id"],))
                 continue
-            if not dst.is_file() or dst.is_symlink() or _hash(dst) != row["verified_hash"]:
+            if not dst.is_file() or dst.is_symlink():
+                raise ExportError("Output modified: refusing to remove")
+            if row["output_device"] is None or row["output_inode"] is None:
+                raise ExportError("Missing ownership evidence: refusing automatic rollback")
+            identity = dst.stat(follow_symlinks=False)
+            if (identity.st_dev != row["output_device"] or identity.st_ino != row["output_inode"]):
+                raise ExportError("Output was replaced: refusing to remove")
+            if _hash(dst) != row["verified_hash"]:
                 raise ExportError("Output modified: refusing to remove")
             dst.unlink()
             with connect(settings.data_dir) as db:

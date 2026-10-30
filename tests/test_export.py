@@ -237,3 +237,49 @@ def test_manifest_failure_during_rollback_stays_recoverable(library, monkeypatch
     set_export_state(settings, plan["id"], "retry_rollback", "ROLLBACK COPIES")
     rollback_export(settings, plan["id"])
     assert export_detail(settings, plan["id"])["state"] == "rolled_back"
+
+
+def test_rollback_refuses_identical_byte_replacement(library):
+    """A same-hash replacement is not a file created by this export."""
+    settings, photos, exports, digest = library
+    plan = create_plan(settings)
+    approve(settings, plan["id"])
+    run_export(settings, plan["id"], Event())
+    target = Path(export_detail(settings, plan["id"])["operations"][0]["destination"])
+    with connect(settings.data_dir) as db:
+        owned = db.execute(
+            "SELECT output_device,output_inode FROM export_operations WHERE export_id=?",
+            (plan["id"],)).fetchone()
+        assert (owned["output_device"],owned["output_inode"]) == (
+            target.stat().st_dev,target.stat().st_ino)
+    replacement = target.with_name("different-inode.tmp")
+    replacement.write_bytes(target.read_bytes())
+    assert replacement.stat().st_ino != target.stat().st_ino
+    os.replace(replacement,target)
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == digest
+    set_export_state(settings, plan["id"], "rollback", "ROLLBACK COPIES")
+    rollback_export(settings, plan["id"])
+    assert target.exists()
+    detail = export_detail(settings, plan["id"])
+    assert detail["state"] == "rollback_partial"
+    assert "replaced" in detail["operations"][0]["error"].lower()
+    assert all(p.is_file() for p in photos.iterdir())
+
+
+def test_rollback_refuses_legacy_output_without_ownership_metadata(library):
+    """Migrated prior M6 exports cannot be deleted based on hashes alone."""
+    settings, photos, exports, digest = library
+    plan = create_plan(settings)
+    approve(settings, plan["id"])
+    run_export(settings, plan["id"], Event())
+    target = Path(export_detail(settings, plan["id"])["operations"][0]["destination"])
+    with connect(settings.data_dir) as db:
+        db.execute(
+            "UPDATE export_operations SET output_device=NULL,output_inode=NULL WHERE export_id=?",
+            (plan["id"],))
+    set_export_state(settings, plan["id"], "rollback", "ROLLBACK COPIES")
+    rollback_export(settings, plan["id"])
+    assert target.is_file()
+    detail = export_detail(settings, plan["id"])
+    assert detail["state"] == "rollback_partial"
+    assert "ownership" in detail["operations"][0]["error"].lower()
