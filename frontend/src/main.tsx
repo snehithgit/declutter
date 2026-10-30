@@ -63,8 +63,8 @@ function App() {
       <section className="config-grid">
         <div className="panel config-panel"><div className="card-heading"><span>◧</span><h3>Photo library</h3></div>
           {settings?.library_roots.length ? settings.library_roots.map(root => <code key={root}>{root}</code>) : <p>No library roots configured.</p>}
-          <p className="muted">Roots are registered only. No files have been scanned.</p>
-          <div className="divider"/><h4>Database & cache</h4><code>{settings?.data_dir ?? 'Loading…'}</code><p className="muted">Stored locally on the machine running PhotoSift.</p>
+          <p className="muted">This root is available for read-only inventory scanning.</p>
+          <div className="divider"/><h4>Database & cache</h4><code>{settings?.data_dir ?? 'Loading…'}</code><p className="muted">Stored locally on the ZimaOS app host.</p>
         </div>
         <div className="panel config-panel"><div className="card-heading"><span>⌘</span><h3>Local AI connection</h3></div>
           <h4>Model</h4><code>{settings?.ollama.model ?? 'Loading…'}</code>

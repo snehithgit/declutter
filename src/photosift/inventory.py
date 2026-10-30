@@ -34,6 +34,10 @@ class ScanCancelled(Exception):
     pass
 
 
+class ScanInterrupted(Exception):
+    """Keep the job in running state so a restarted worker picks it up."""
+
+
 def root_available(root: Path) -> bool:
     if root.is_symlink() or not root.is_dir():
         return False
@@ -148,7 +152,7 @@ def _job_status(db: sqlite3.Connection, job_id: str) -> str:
 
 def _check_controls(settings: Settings, job_id: str, root: Path, stop: object) -> None:
     if stop.is_set():
-        raise ScanPaused("Worker stopping; scan will resume on restart")
+        raise ScanInterrupted("Worker stopped; resume on next worker start")
     with connect(settings.data_dir) as db:
         state = _job_status(db, job_id)
     if state == "cancelled":
@@ -262,6 +266,8 @@ def run_scan(settings: Settings, job_id: str, root_id: int, root: Path, stop: ob
             db.execute("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
             db.execute("UPDATE library_roots SET last_scan_at=CURRENT_TIMESTAMP,reachability='online' WHERE id=?", (root_id,))
             db.commit()
+    except ScanInterrupted:
+        logger.info("Worker interrupted scan %s; leaving it for restart recovery", job_id)
     except ScanCancelled:
         with connect(settings.data_dir) as db:
             db.execute("UPDATE jobs SET finished_at=CURRENT_TIMESTAMP WHERE id=? AND state='cancelled'", (job_id,))

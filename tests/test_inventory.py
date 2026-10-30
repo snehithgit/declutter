@@ -184,3 +184,17 @@ def test_worker_executes_persisted_job(env):
             worker.terminate()
             worker.join(3)
     assert worker.exitcode == 0
+
+
+def test_orderly_worker_stop_recovers_scan_on_restart(env):
+    settings, library, root_id = env
+    make_image(library / "restart.png")
+    id = job(settings, root_id)
+    stopped = Event()
+    stopped.set()
+    run_scan(settings, id, root_id, library, stopped)
+    with connect(settings.data_dir) as db:
+        assert db.execute("SELECT state FROM jobs WHERE id=?", (id,)).fetchone()[0] == "running"
+    run_scan(settings, id, root_id, library, Event())
+    with connect(settings.data_dir) as db:
+        assert db.execute("SELECT state FROM jobs WHERE id=?", (id,)).fetchone()[0] == "done"
