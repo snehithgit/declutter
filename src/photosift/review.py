@@ -191,6 +191,20 @@ def review_history(db: sqlite3.Connection, digest: str | None, limit: int, offse
     return {"total": total, "items": rows}
 
 
+def review_copies(db: sqlite3.Connection, digest: str, limit: int, offset: int) -> dict:
+    """Page through ALL file paths, including historical missing/disabled instances."""
+    if not DIGEST.fullmatch(digest):
+        return {"total": 0, "items": []}
+    total = db.execute("SELECT COUNT(*) FROM files WHERE content_hash=?", (digest,)).fetchone()[0]
+    items = [dict(row) for row in db.execute("""SELECT f.id,r.path AS root_path,
+        f.relative_path,r.enabled AS root_enabled,f.missing,f.capture_time,
+        f.camera_make,f.camera_model,f.width,f.height,f.format,f.size
+        FROM files f JOIN library_roots r ON r.id=f.root_id
+        WHERE f.content_hash=? ORDER BY f.missing ASC,r.enabled DESC,r.path,f.relative_path,f.id
+        LIMIT ? OFFSET ?""", (digest, limit, offset))]
+    return {"total": total, "items": items, "limit": limit, "offset": offset}
+
+
 def review_detail(db: sqlite3.Connection, digest: str) -> dict | None:
     if not DIGEST.fullmatch(digest):
         return None
@@ -199,12 +213,9 @@ def review_detail(db: sqlite3.Connection, digest: str) -> dict | None:
     if item is None:
         return None
     result = _decorate(dict(item))
-    result["copies"] = [dict(row) for row in db.execute("""SELECT f.id,r.path AS root_path,
-        f.relative_path,r.enabled AS root_enabled,f.missing,f.capture_time,
-        f.camera_make,f.camera_model,f.width,f.height,f.format,f.size
-        FROM files f JOIN library_roots r ON r.id=f.root_id
-        WHERE f.content_hash=? ORDER BY f.missing ASC,r.enabled DESC,r.path,f.relative_path
-        LIMIT 300""", (digest,))]
+    copies = review_copies(db, digest, 100, 0)
+    result["copies"] = copies["items"]
+    result["copy_total"] = copies["total"]
     result["history"] = review_history(db, digest, 40, 0)["items"]
     return result
 
