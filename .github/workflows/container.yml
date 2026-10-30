@@ -86,12 +86,22 @@ jobs:
             docker logs photosift-ci
             return 1
           }
+          verify_duplicates() {
+            curl --silent --show-error --fail http://127.0.0.1:8765/api/duplicates/summary | \
+              python -c 'import json,sys; d=json.load(sys.stdin); assert d == {"groups":0,"copies":0,"extra_copies":0,"potential_reclaim_bytes":0},d'
+            curl --silent --show-error --fail 'http://127.0.0.1:8765/api/duplicates?sort=space&limit=24&offset=0' | \
+              python -c 'import json,sys; d=json.load(sys.stdin); assert d["total"] == 0 and d["items"] == [],d'
+            [ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              http://127.0.0.1:8765/api/duplicates/invalid/files)" = "404" ]
+          }
           wait_for_ready
+          verify_duplicates
           curl --fail --silent http://127.0.0.1:8765/ | grep -q 'PhotoSift'
           docker restart photosift-ci
           # Allow the previous worker lease to expire before judging recovery.
           sleep 20
           wait_for_ready
+          verify_duplicates
       - name: Container diagnostics and cleanup
         if: always()
         run: |
