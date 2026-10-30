@@ -11,6 +11,7 @@ from typing import Protocol
 from .config import load_settings
 from .db import connect, initialize
 from .inventory import next_scan_job, run_scan
+from .classification import next_classification_job, run_classification
 from .logging_setup import configure_logging
 
 LEASE_SECONDS = 15
@@ -82,7 +83,11 @@ def run_worker(config_path: str, stop: StopEvent) -> None:
             if job:
                 run_scan(settings, *job, combined)
             else:
-                stop.wait(1)
+                classification = next_classification_job(settings)
+                if classification:
+                    run_classification(settings, classification, combined)
+                else:
+                    stop.wait(1)
         if lost.is_set():
             raise RuntimeError("Worker lost its database lease")
     finally:

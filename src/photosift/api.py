@@ -12,18 +12,24 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import __version__
 from .config import Settings
 from .db import connect, initialize
 from .duplicates import duplicate_summary, list_duplicate_groups, duplicate_group_files
+from .classification import queue_classification, classification_jobs, recent_predictions
 from .logging_setup import configure_logging
 from .worker import LEASE_SECONDS
 
 
 class ScanRequest(BaseModel):
     root_id: int | None = None
+
+
+class ClassificationRequest(BaseModel):
+    force: bool = False
+    limit: int | None = Field(default=None, ge=1, le=100000)
 
 
 class JobAction(BaseModel):
@@ -52,10 +58,10 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
             worker = db.execute("SELECT heartbeat FROM worker_leases WHERE name='main'").fetchone()
             journal = db.execute("PRAGMA journal_mode").fetchone()[0]
         alive = bool(worker and time.time() - worker["heartbeat"] < LEASE_SECONDS)
-        return {"status": "ok" if alive else "degraded", "version": __version__, "milestone": "M3",
+        return {"status": "ok" if alive else "degraded", "version": __version__, "milestone": "M4",
                 "database": {"schema_version": version, "journal_mode": journal},
                 "worker": {"state": "ready" if alive else "offline"},
-                "features": {"inventory": True, "duplicates": True, "classification": False, "review": False, "export": False}}
+                "features": {"inventory": True, "duplicates": True, "classification": True, "review": False, "export": False}}
 
     @app.get("/api/settings")
     def public_settings() -> dict:
@@ -192,6 +198,41 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
                        (new, new, job_id))
             db.commit()
         return {"id": job_id, "state": new}
+
+    @app.get("/api/classification/jobs")
+    def classification_list() -> list[dict]:
+        return classification_jobs(settings)
+
+    @app.get("/api/classification/results")
+    def classification_results(limit: int = Query(default=30, ge=1, le=100)) -> list[dict]:
+        return recent_predictions(settings, limit)
+
+    @app.post("/api/classification/jobs", status_code=201)
+    def new_classification(request: ClassificationRequest) -> dict:
+        try:
+            return queue_classification(settings, force=request.force, limit=request.limit)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/classification/jobs/{job_id}/action")
+    def classification_action(job_id: str, request: JobAction) -> dict:
+        with connect(settings.data_dir) as db:
+            db.execute("BEGIN IMMEDIATE")
+            job = db.execute("SELECT state FROM jobs WHERE id=? AND kind='classification'", (job_id,)).fetchone()
+            if job is None:
+                db.rollback()
+                raise HTTPException(404, "Classification job not found")
+            rules = {"pause": ({"queued", "running"}, "paused"),
+                     "resume": ({"paused", "failed"}, "queued"),
+                     "cancel": ({"queued", "running", "paused", "failed"}, "cancelled")}
+            eligible, dest = rules[request.action]
+            if job["state"] not in eligible:
+                db.rollback()
+                raise HTTPException(409, f"Cannot {request.action} a {job['state']} job")
+            db.execute("UPDATE jobs SET state=?,pause_reason=NULL,finished_at=CASE WHEN ?='cancelled' THEN CURRENT_TIMESTAMP ELSE NULL END WHERE id=?",
+                       (dest, dest, job_id))
+            db.commit()
+        return {"id": job_id, "state": dest}
 
     def media(digest: str, kind: Literal["thumbnails", "previews"]) -> FileResponse:
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):

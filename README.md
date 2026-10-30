@@ -1,13 +1,13 @@
 # PhotoSift — Release 1
 
-Local photo decluttering with a persistent read-only inventory. **Current milestone: M3 (exact duplicate groups).**
-M2 provides scans and image previews. M3 adds exact SHA-256 duplicate groups, shared content identity and read-only locations. AI classification, review decisions and photo export are not implemented.
+Local photo decluttering with a persistent read-only inventory. **Current milestone: M4 (resumable local AI classification).**
+M2 provides scans and image previews. M3 adds exact duplicates. M4 adds user-initiated Ollama classification with durable queues and validated per-content results. Human review decisions and photo export remain unimplemented.
 
 ## Accepted architecture
 
 ZimaOS hosts the FastAPI app, built React UI, SQLite database, thumbnails/previews/logs,
 and a separate worker process. The GPU laptop runs Ollama. Future M4 inference sends
-resized previews only to the configured laptop URL. M3 makes no outbound requests.
+resized previews only to the configured laptop URL. M4 contacts only the configured Ollama endpoint during user-started classification jobs.
 The database must live on Zima's local filesystem, preferably SSD, never an SMB/NFS mount.
 
 This supersedes the original brief's laptop-hosted app and localhost-only deployment.
@@ -67,8 +67,8 @@ The production build is served directly by FastAPI, with no Node process require
 5. Check `docker compose ps`, `/api/health`, and `docker compose logs`.
 
 The photo source is mounted read-only. Logs rotate under `/data/logs`; Docker output also rotates.
-The inventory worker and duplicate views make no external calls in M3. Building/installing dependencies needs internet.
-Ollama availability is deliberately **not checked** until M4, so the UI says “Not checked yet”.
+The inventory worker and duplicate views make no external calls; M4 sends cached previews to the configured local Ollama endpoint when a job is started. Building/installing dependencies needs internet.
+Ollama is contacted only during active classification or an explicit benchmark. If unavailable, the job pauses for manual resume.
 Publishing Ollama to the LAN will require its `OLLAMA_HOST` setting and an appropriately scoped
 laptop firewall rule; no laptop networking is changed by this milestone.
 
@@ -128,7 +128,7 @@ check fail. Inventory jobs can be created with `POST /api/scans`; no endpoint wr
 1. **M1 complete:** configuration, schema/migrations, worker skeleton, UI shell, startup/deployment.
 2. **M2 complete:** incremental read-only inventory, streamed hashing, thumbnails, disconnect-safe scans.
 3. **M3 complete:** exact duplicate groups, counts, all copy locations and shared content identity.
-4. M4: resumable D3 Nano classification, retries/controls, benchmark, per-item persistence.
+4. **M4 implemented:** resumable D3 Nano classification, retries/controls, benchmark, per-item persistence.
 5. M5: virtualized review grid, filters, bulk decisions, keyboard controls, audit history.
 6. M6: explicitly approved, verified copy-only export with manifests and recovery journal.
 
@@ -188,3 +188,22 @@ or automatically approve any copy. Later milestones handle AI and user review.
 All endpoints read the existing SQLite database. Re-scans update the underlying
 records and the duplicate view automatically reflects the latest inventory.
 Run the backend suite with `python -m pytest -q` and build the frontend with `npm run build`.
+
+## M4 — Local AI classification
+
+First complete a library scan, then open **AI classification** and start a job with the laptop running Ollama on your trusted LAN. Only cached previews (resized JPEGs) are sent to Ollama; original files stay read-only. Results belong to unique SHA-256 content, so duplicates share one result.
+
+Existing results for the same model and prompt version (m4-v1) are skipped unless **Reprocess existing results** is enabled. You can use an optional item limit for small runs. Each result is committed to SQLite immediately. Worker restart recovers running items. An unavailable laptop pauses the job without consuming attempts; reconnect Ollama and press Resume. Pause or cancel takes effect after any in-flight model request (timeout: 120 seconds).
+
+The model must return strict schema-valid JSON: category, subcategory, confidence, reason, people/text/importance flags and importance reason. Raw responses, model/prompt versions, duration and uncertainty are retained. Invalid responses retry once, and other per-image errors retry up to three times with exponential backoff. Classification and importance are independent. These are **suggestions**, never user decisions. Cheap preview flags such as blur, low-resolution and screen shape are only hints, not automatic decisions.
+
+### M4 API
+
+- POST /api/classification/jobs JSON `{ "force": false }` with optional `limit` (1–100000)
+- GET /api/classification/jobs — progress, retries, failures, throughput and ETA
+- POST /api/classification/jobs/{id}/action JSON `{ "action": "pause" }`, `resume` or `cancel`
+- GET /api/classification/results?limit=30 — recent model suggestions
+
+### Benchmark and deployment
+
+`python -m photosift.benchmark --config config.toml --count 5` runs a read-only sample using cached previews and reports throughput, mean latency and errors without writing AI results. No migration is necessary: M4 uses tables established by M1. GitHub commits do not deploy automatically to the running ZimaOS container; after CI succeeds, use the existing registry Compose pull/up commands. Only M1–M4 are implemented; M5 human review and M6 exports remain disabled.

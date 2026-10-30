@@ -96,6 +96,13 @@ jobs:
           }
           wait_for_ready
           verify_duplicates
+          curl --silent --show-error --fail http://127.0.0.1:8765/api/health | \
+            python -c 'import json,sys; d=json.load(sys.stdin); assert d["features"]["classification"] is True'
+          curl --silent --show-error --fail http://127.0.0.1:8765/api/classification/jobs | \
+            python -c 'import json,sys; assert json.load(sys.stdin)==[]'
+          curl --silent --show-error --fail -X POST -H 'Content-Type: application/json' \
+            -d '{}' http://127.0.0.1:8765/api/classification/jobs | \
+            python -c 'import json,sys; assert json.load(sys.stdin)["queued"]==0'
           curl --fail --silent http://127.0.0.1:8765/ | grep -q 'PhotoSift'
           docker restart photosift-ci
           # Allow the previous worker lease to expire before judging recovery.
