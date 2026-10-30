@@ -19,7 +19,7 @@ type Photo={
 type Copy={id:number;root_path:string;relative_path:string;missing:number;root_enabled:number;size:number};
 type Audit={id:number;created_at:string;before:{decision:Decision;category_override:Category|null};
  after:{decision:Decision;category_override:Category|null}};
-type Detail=Photo&{copies:Copy[];history:Audit[]};
+type Detail=Photo&{copies:Copy[];copy_total:number;history:Audit[]};
 type Page={total:number;items:Photo[]};
 type Summary={total:number;keep:number;clutter:number;review_later:number;undecided:number;classified:number};
 type Root={id:number;path:string;enabled:number};
@@ -61,6 +61,8 @@ export default function Review(){
  const [allMatching,setAllMatching]=useState(false);
  const [selected,setSelected]=useState<string|null>(null);
  const [detail,setDetail]=useState<Detail|null>(null);
+ const [moreCopies,setMoreCopies]=useState<Copy[]>([]);
+ const [copiesBusy,setCopiesBusy]=useState(false);
  const [category,setCategory]=useState('');
  const [error,setError]=useState('');
  const [notice,setNotice]=useState('');
@@ -89,6 +91,7 @@ export default function Review(){
   return()=>{alive=false;clearInterval(timer);};
  },[filters,offset,refresh]);
  useEffect(()=>{
+  setMoreCopies([]);
   if(!selected){setDetail(null);return;}
   let alive=true;
   setDetail(null);
@@ -97,6 +100,16 @@ export default function Review(){
   return()=>{alive=false;};
  },[selected,refresh]);
 
+ async function loadMoreCopies(){
+  if(!detail||copiesBusy)return;
+  setCopiesBusy(true);
+  try{
+   const next=await request<{items:Copy[]}>('/api/reviews/'+detail.content_hash+
+    '/copies?limit=100&offset='+(detail.copies.length+moreCopies.length));
+   setMoreCopies(previous=>[...previous,...next.items]);
+  }catch(exc){setError(exc instanceof Error?exc.message:'Cannot load more file locations');}
+  finally{setCopiesBusy(false);}
+ }
  function toggle(digest:string,index:number,shift:boolean){
   const next=new Set(checked);
   if(allMatching){setAllMatching(false);next.clear();}
@@ -173,6 +186,7 @@ export default function Review(){
     <button onClick={()=>{setChecked(new Set());setAllMatching(true);}}>Select all matching ({number(page.total)})</button>
     <button onClick={()=>{setChecked(new Set());setAllMatching(false);}}>Clear selection</button>
     <button onClick={()=>{setFilters(initial);setSearchDraft('');setOffset(0);setAllMatching(false);setChecked(new Set());}}>Reset filters</button>
+    <a className="review-export" href="/api/reviews/audit.csv" download>Export corrections CSV</a>
    </div>
   </div>
   {count>0&&<div className="panel review-bulk"><strong>{number(count)} selected</strong>
@@ -235,10 +249,12 @@ export default function Review(){
       <p><b>Flags:</b> {detail.blurry?'Possibly blurry · ':''}{detail.low_resolution?'Low resolution':'No low-resolution flag'}</p>
       <p><b>Model:</b> {detail.model_tag||'Not classified'}</p>
      </div>
-     <h3>File locations (up to 300)</h3>
-     <div className="review-locations">{detail.copies.map(c=><div key={c.id}>
+     <h3>File locations ({detail.copy_total})</h3>
+     <div className="review-locations">{[...detail.copies,...moreCopies].map(c=><div key={c.id}>
       <small>{c.missing?'Missing':!c.root_enabled?'Disabled library':'Present at last scan'}</small>
       <code>{c.root_path}/{c.relative_path}</code></div>)}</div>
+     {detail.copies.length+moreCopies.length<detail.copy_total&&<button className="review-load-copies" disabled={copiesBusy}
+      onClick={()=>void loadMoreCopies()}>{copiesBusy?'Loading…':'Load more file locations'}</button>}
      <h3>Review history (latest 40)</h3>
      <div className="review-history">{detail.history.length===0?<p>No manual changes yet.</p>:
       detail.history.map(entry=><p key={entry.id}>{entry.created_at} · {text(entry.before.decision)}
