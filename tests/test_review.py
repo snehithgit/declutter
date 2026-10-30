@@ -131,3 +131,24 @@ def test_latest_ai_flags_and_category_corrections(collection):
         assert client.post("/api/reviews/bulk",json={"hashes":[first],"category_override":"other"}).json()["changed"]==1
         assert client.get("/api/reviews",params={"category":"other"}).json()["total"]==1
         assert client.get("/api/reviews",params={"category":"screenshot"}).json()["total"]==0
+
+
+def test_csv_export_and_paged_duplicate_locations(collection):
+    settings,a,b,roots,first,second=collection
+    with TestClient(create_app(settings)) as client:
+        assert client.post("/api/reviews/bulk",json={
+            "hashes":[first],"decision":"review_later"}).status_code==200
+        exported=client.get("/api/reviews/audit.csv")
+        assert exported.status_code==200
+        assert exported.headers["content-type"].startswith("text/csv")
+        assert "decision_before,decision_after" in exported.text
+        assert first in exported.text
+        assert "undecided,review_later" in exported.text
+        page_one=client.get("/api/reviews/"+first+"/copies?limit=1").json()
+        page_two=client.get("/api/reviews/"+first+"/copies?limit=1&offset=1").json()
+        assert page_one["total"]==2
+        assert len(page_one["items"])==1 and len(page_two["items"])==1
+        assert page_one["items"][0]["id"]!=page_two["items"][0]["id"]
+        detail=client.get("/api/reviews/"+first).json()
+        assert detail["copy_total"]==2
+        assert client.get("/api/reviews/"+first+"/copies?limit=201").status_code==422
