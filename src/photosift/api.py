@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from . import __version__
 from .config import Settings
 from .db import connect, initialize
+from .duplicates import duplicate_summary, list_duplicate_groups, duplicate_group_files
 from .logging_setup import configure_logging
 from .worker import LEASE_SECONDS
 
@@ -51,10 +52,10 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
             worker = db.execute("SELECT heartbeat FROM worker_leases WHERE name='main'").fetchone()
             journal = db.execute("PRAGMA journal_mode").fetchone()[0]
         alive = bool(worker and time.time() - worker["heartbeat"] < LEASE_SECONDS)
-        return {"status": "ok" if alive else "degraded", "version": __version__, "milestone": "M2",
+        return {"status": "ok" if alive else "degraded", "version": __version__, "milestone": "M3",
                 "database": {"schema_version": version, "journal_mode": journal},
                 "worker": {"state": "ready" if alive else "offline"},
-                "features": {"inventory": True, "classification": False, "review": False, "export": False}}
+                "features": {"inventory": True, "duplicates": True, "classification": False, "review": False, "export": False}}
 
     @app.get("/api/settings")
     def public_settings() -> dict:
@@ -111,6 +112,31 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
             item.pop("thumbnail_path")
             item.pop("preview_path")
         return {"total": total, "items": items, "limit": limit, "offset": offset}
+
+    @app.get("/api/duplicates/summary")
+    def duplicate_totals() -> dict:
+        with connect(settings.data_dir) as db:
+            return duplicate_summary(db)
+
+    @app.get("/api/duplicates")
+    def duplicates(limit: int = Query(default=24, ge=1, le=100),
+                   offset: int = Query(default=0, ge=0),
+                   sort: Literal["space", "copies", "size"] = "space") -> dict:
+        with connect(settings.data_dir) as db:
+            db.execute("BEGIN")  # snapshot keeps summary and page consistent during a scan
+            return list_duplicate_groups(db, limit, offset, sort)
+
+    @app.get("/api/duplicates/{digest}/files")
+    def duplicate_copies(digest: str, limit: int = Query(default=50, ge=1, le=100),
+                         offset: int = Query(default=0, ge=0)) -> dict:
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise HTTPException(404, "Duplicate group not found")
+        with connect(settings.data_dir) as db:
+            db.execute("BEGIN")
+            group = duplicate_group_files(db, digest, limit, offset)
+        if group is None:
+            raise HTTPException(404, "Duplicate group not found")
+        return group
 
     @app.get("/api/jobs")
     def jobs() -> list[dict]:

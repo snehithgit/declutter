@@ -1,13 +1,13 @@
 # PhotoSift — Release 1
 
-Local photo decluttering with a persistent read-only inventory. **Current milestone: M2 (inventory and previews).**
-M2 provides scans, hashing, image metadata and previews. AI classification, review decisions, and photo export are not implemented.
+Local photo decluttering with a persistent read-only inventory. **Current milestone: M3 (exact duplicate groups).**
+M2 provides scans and image previews. M3 adds exact SHA-256 duplicate groups, shared content identity and read-only locations. AI classification, review decisions and photo export are not implemented.
 
 ## Accepted architecture
 
 ZimaOS hosts the FastAPI app, built React UI, SQLite database, thumbnails/previews/logs,
 and a separate worker process. The GPU laptop runs Ollama. Future M4 inference sends
-resized previews only to the configured laptop URL. M2 makes no outbound requests.
+resized previews only to the configured laptop URL. M3 makes no outbound requests.
 The database must live on Zima's local filesystem, preferably SSD, never an SMB/NFS mount.
 
 This supersedes the original brief's laptop-hosted app and localhost-only deployment.
@@ -67,12 +67,12 @@ The production build is served directly by FastAPI, with no Node process require
 5. Check `docker compose ps`, `/api/health`, and `docker compose logs`.
 
 The photo source is mounted read-only. Logs rotate under `/data/logs`; Docker output also rotates.
-The inventory worker makes no external calls in M2. Building/installing dependencies needs internet.
+The inventory worker and duplicate views make no external calls in M3. Building/installing dependencies needs internet.
 Ollama availability is deliberately **not checked** until M4, so the UI says “Not checked yet”.
 Publishing Ollama to the LAN will require its `OLLAMA_HOST` setting and an appropriately scoped
 laptop firewall rule; no laptop networking is changed by this milestone.
 
-### Current deployed instance
+### Previous verified deployment
 
 The previous M1 deployment was verified at `http://192.168.68.63:8765`, from `/DATA/AppData/photosift/project`.
 Its read-only source mount is `/DATA/Gallery/local`; its local data path is
@@ -127,7 +127,7 @@ check fail. Inventory jobs can be created with `POST /api/scans`; no endpoint wr
 
 1. **M1 complete:** configuration, schema/migrations, worker skeleton, UI shell, startup/deployment.
 2. **M2 complete:** incremental read-only inventory, streamed hashing, thumbnails, disconnect-safe scans.
-3. M3: exact duplicate groups and shared content identity.
+3. **M3 complete:** exact duplicate groups, counts, all copy locations and shared content identity.
 4. M4: resumable D3 Nano classification, retries/controls, benchmark, per-item persistence.
 5. M5: virtualized review grid, filters, bulk decisions, keyboard controls, audit history.
 6. M6: explicitly approved, verified copy-only export with manifests and recovery journal.
@@ -157,4 +157,34 @@ Photo originals remain untouched. M2 performs no Ollama inference, sorting, revi
 - `POST /api/jobs/{id}/action` with `{"action":"pause"}`, `resume`, or `cancel`
 - `GET /api/thumbnails/{sha256}` and `GET /api/previews/{sha256}`: cached images
 
-Do not enable the next classification milestone until M2 is reviewed on your library.
+The AI classification milestone (M4) is not enabled. Review the inventory and exact duplicate groups before proceeding.
+
+## M3 exact duplicates
+
+Select **Duplicates** in the sidebar or mobile switcher after running an M2 inventory scan.
+PhotoSift groups files by their full SHA-256 content hash across all configured roots,
+regardless of filename or extension. A group requires at least two **known-present**
+instances; missing historical instances do not count toward a duplicate match.
+These groups are computed directly from existing `files.content_hash` records and
+`contents`; no additional scan, migration, GPU inference, or persistent regroup job is needed.
+
+The view provides duplicate-group count, total matching files, extra copies,
+potential extra space, sorting (potential space, copy count, file size),
+stable pagination, cached thumbnails, and detailed paginated paths for every copy.
+Historical missing paths remain visible in a group's details whenever two present
+instances still exist. All status information is based on the last inventory
+record; disconnected roots are not silently marked missing. Duplicate storage
+is an estimate, not guaranteed disk space savings (hard links can share storage).
+
+M3 is **read-only**: it does not choose a keeper, delete, move, rename, export,
+or automatically approve any copy. Later milestones handle AI and user review.
+
+### M3 API
+
+- `GET /api/duplicates/summary`: current duplicate counts and estimated extra bytes
+- `GET /api/duplicates?sort=space&limit=24&offset=0`: sorted, paginated groups
+- `GET /api/duplicates/{sha256}/files?limit=50&offset=0`: all known instance locations, with missing history
+
+All endpoints read the existing SQLite database. Re-scans update the underlying
+records and the duplicate view automatically reflects the latest inventory.
+Run the backend suite with `python -m pytest -q` and build the frontend with `npm run build`.
