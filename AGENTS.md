@@ -3,8 +3,8 @@
 This is a fresh project. Do not reuse the parent legacy organizer's database or photo operations.
 The accepted architecture is Zima app/database/worker + laptop Ollama inference over LAN.
 
-- Follow the milestone order in README. Stop after each milestone's tests and summary. M5 is implemented on main; M6 is next.
-- M5: photo inventory, exact duplicates, Ollama classification and human-only review decisions are enabled. Review writes only the local SQLite database. Never export, copy, move, rename, or delete source files.
+- Follow the milestone order in README. Stop after each milestone's tests and summary. M6 is implemented on main. Keep subsequent changes narrow and fully tested.
+- M6: explicitly approved copy-only exports can write ONLY to a separate mounted export destination. Preserve read-only source mounts. Never move, rename or delete originals; rollback may delete only recorded hash-verified output copies this export created.
 - Never modify originals. Future exports are copy-only and require explicit approval.
 - Use Python 3.12, typed small functions, FastAPI, plain sqlite3, React/Vite/TypeScript.
 - All lengthy operations belong in the separate persistent worker, never API background tasks.

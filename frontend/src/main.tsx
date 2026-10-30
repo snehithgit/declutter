@@ -5,6 +5,7 @@ import Inventory from './Inventory';
 import Duplicates from './Duplicates';
 import Classification from './Classification';
 import Review from './Review';
+import Exports from './Exports';
 
 type Health = { status: string; milestone: string; version: string;
   database: { schema_version: number; journal_mode: string }; worker: { state: string } };
@@ -16,7 +17,7 @@ function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
-  const [page, setPage] = useState<'overview' | 'duplicates' | 'classification' | 'review'>('overview');
+  const [page, setPage] = useState<'overview' | 'duplicates' | 'classification' | 'review' | 'export'>('overview');
   useEffect(() => {
     const controller = new AbortController();
     async function load() {
@@ -42,22 +43,24 @@ function App() {
       <button type="button" className={`nav nav-button ${page === 'duplicates' ? 'active' : ''}`} onClick={() => setPage('duplicates')}>▧ <span>Duplicates</span></button>
       <button type="button" className={`nav nav-button ${page === 'classification' ? 'active' : ''}`} onClick={() => setPage('classification')}>✧ <span>AI classification</span></button>
       <button type="button" className={`nav nav-button ${page === 'review' ? 'active' : ''}`} onClick={() => setPage('review')}>☑ <span>Review</span></button>
+      <button type="button" className={`nav nav-button ${page === 'export' ? 'active' : ''}`} onClick={() => setPage('export')}>▣ <span>Copy export</span></button>
       <div className="sidebar-label release-label">RELEASE 1</div>
-      {steps.map((step, index) => <div key={step} className={`step ${index === 4 ? 'current' : ''}`}>
-        <span className="step-number">{index <= 4 ? '✓' : String(index + 1).padStart(2, '0')}</span>
-        <span>{step}</span>{index > 4 && <span className="later">Later</span>}
+      {steps.map((step, index) => <div key={step} className={`step ${index === 5 ? 'current' : ''}`}>
+        <span className="step-number">{index <= 5 ? '✓' : String(index + 1).padStart(2, '0')}</span>
+        <span>{step}</span>{index > 5 && <span className="later">Later</span>}
       </div>)}
       <div className="sidebar-foot"><span className="dot"/> Local processing<br/><small>Your library stays on your devices.</small></div>
     </aside>
     <main>
-      <header><span>Workspace <span className="slash">/</span> {page === 'overview' ? 'Overview' : page === 'duplicates' ? 'Duplicates' : page === 'classification' ? 'AI classification' : 'Review'}</span><span className="badge">MILESTONE 05</span></header>
+      <header><span>Workspace <span className="slash">/</span> {page === 'overview' ? 'Overview' : page === 'duplicates' ? 'Duplicates' : page === 'classification' ? 'AI classification' : page === 'review' ? 'Review' : 'Copy export'}</span><span className="badge">MILESTONE 06</span></header>
       <div className="mobile-view-switch" aria-label="Workspace view">
         <button type="button" className={page === 'overview' ? 'selected' : ''} onClick={() => setPage('overview')}>Overview</button>
         <button type="button" className={page === 'duplicates' ? 'selected' : ''} onClick={() => setPage('duplicates')}>Duplicates</button>
         <button type="button" className={page === 'classification' ? 'selected' : ''} onClick={() => setPage('classification')}>AI</button>
         <button type="button" className={page === 'review' ? 'selected' : ''} onClick={() => setPage('review')}>Review</button>
+        <button type="button" className={page === 'export' ? 'selected' : ''} onClick={() => setPage('export')}>Export</button>
       </div>
-      {page === 'duplicates' ? <Duplicates/> : page === 'classification' ? <Classification model={settings?.ollama.model ?? ''} endpoint={settings?.ollama.url ?? ''}/> : page === 'review' ? <Review/> : <>
+      {page === 'duplicates' ? <Duplicates/> : page === 'classification' ? <Classification model={settings?.ollama.model ?? ''} endpoint={settings?.ollama.url ?? ''}/> : page === 'review' ? <Review/> : page === 'export' ? <Exports/> : <>
       <section className="intro"><div className="eyebrow">A LITTLE LESS CLUTTER. A LOT MORE MEANING.</div>
         <h1>Make room for the moments.</h1>
         <p>A thoughtful home for sorting your photo library. Start scanning your photo library safely, then browse filenames, metadata and thumbnails.</p>
@@ -69,8 +72,8 @@ function App() {
         <Status title="AI INFERENCE" value="Not checked yet" note="Ollama only contacted during classification" good={false}/>
       </section>
       <section className="foundation panel"><div className="foundation-icon">✳</div><div><span className="eyebrow">READ-ONLY INVENTORY</span><h2>Discover your photo library.</h2>
-        <p>Inventory, duplicate grouping, AI classification and human review are available. Export remains disabled.</p>
-        <div className="progress"><span/></div><div className="progress-caption"><b>Milestone 5 of 6</b><span>Human review and corrections</span></div>
+        <p>Inventory, duplicates, AI classification, human review and explicitly approved copy-only exports are available.</p>
+        <div className="progress"><span/></div><div className="progress-caption"><b>Milestone 6 of 6</b><span>Approved copy-only export</span></div>
       </div></section>
       <Inventory/>
       <div className="section-heading"><h2>Workspace configuration</h2><span>Read-only overview</span></div>
@@ -87,7 +90,7 @@ function App() {
         </div>
       </section>
       </>}
-      <footer><span>Originals stay untouched. You stay in control.</span><span>PhotoSift {health?.version ?? '0.5.0'}</span></footer>
+      <footer><span>Originals stay untouched. You stay in control.</span><span>PhotoSift {health?.version ?? '0.6.0'}</span></footer>
     </main>
   </div>;
 }

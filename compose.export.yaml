@@ -1,0 +1,12 @@
+# Optional M6 writable export destination, combined with the standard Compose file.
+# Host path MUST be separate from all source libraries and PhotoSift app data.
+services:
+  photosift:
+    environment:
+      PHOTOSIFT_EXPORT_DIR: /exports
+    volumes:
+      - type: bind
+        source: "${PHOTOSIFT_EXPORT_PATH:?Set PHOTOSIFT_EXPORT_PATH to a separate writable host directory}"
+        target: /exports
+        bind:
+          create_host_path: false

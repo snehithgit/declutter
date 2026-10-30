@@ -1,7 +1,7 @@
 # PhotoSift — Release 1
 
-Local photo decluttering with a persistent read-only inventory. **Current milestone: M5 (human review and corrections).**
-M2 provides scans and image previews. M3 adds exact duplicates. M4 adds user-initiated Ollama classification with durable queues and validated per-content results. M5 adds human review decisions and category corrections. Photo export remains unimplemented.
+Local photo decluttering with a persistent read-only inventory. **Current milestone: M6 (copy-only export with explicit approval).**
+M2 provides scans and image previews. M3 adds exact duplicates. M4 adds user-initiated Ollama classification with durable queues and validated per-content results. M5 adds human review. M6 adds frozen plans, explicit approval, verified copying and rollback.
 
 ## Accepted architecture
 
@@ -130,7 +130,7 @@ check fail. Inventory jobs can be created with `POST /api/scans`; no endpoint wr
 3. **M3 complete:** exact duplicate groups, counts, all copy locations and shared content identity.
 4. **M4 implemented:** resumable D3 Nano classification, retries/controls, benchmark, per-item persistence.
 5. **M5 implemented:** virtualized review grid, filters, bulk decisions, keyboard controls, audit history.
-6. M6: explicitly approved, verified copy-only export with manifests and recovery journal.
+6. **M6 implemented:** explicitly approved, verified copy-only export with manifests and recovery journal.
 
 Later: near duplicates, event grouping, embedding models, XMP and gallery integration.
 
@@ -236,3 +236,33 @@ Backend operations validate digests, reject missing/disabled-only content, and c
 Example request body: {"filters":{"review_status":"undecided","duplicates_only":true},"decision":"review_later"}.
 
 M5 reuses the M1 reviews and audit_log tables; no migration is needed. The single-user LAN app has no authentication, so restrict its network exposure. Use the Zima read-only library mount. After GitHub Actions succeeds, update the running ZimaOS container separately with your existing registry Compose instructions.
+
+## M6 — Safe copy-only export
+
+Export is **disabled unless a separate writable destination is explicitly configured**. The default Compose services retain their read-only photo source and work without an export mount. To opt in on ZimaOS, create a dedicated host folder outside both /DATA/Gallery/local and /DATA/AppData/photosift/data, such as /DATA/Exports/PhotoSift, and make it writable by container UID 1000. Add PHOTOSIFT_EXPORT_PATH=/DATA/Exports/PhotoSift to the local .env file (never commit your .env).
+
+With a published GitHub image, run the following commands on ZimaOS:
+
+    cd /DATA/AppData/photosift/project
+    sudo env DOCKER_CONFIG=/DATA/AppData/photosift/docker-config docker compose -f compose.registry.yaml -f compose.export.yaml pull
+    sudo env DOCKER_CONFIG=/DATA/AppData/photosift/docker-config docker compose -f compose.registry.yaml -f compose.export.yaml up -d
+
+For local builds, use compose.yaml instead of compose.registry.yaml and build before starting. The optional override adds a writable /exports mount, using an existing host folder; /library remains read-only and /data remains unchanged. For Windows, set export_dir in config.toml to a separate existing local folder and restart. Network mounts and path overlaps are rejected.
+
+1. Mark files Keep or Review Later in M5. Clutter is omitted by default but can be explicitly included in its own folder.
+2. Open Copy export and Generate plan. This freezes one source per reviewed unique SHA-256 image plus the exact source/destination, expected size/hash, category, decision, model reason and date source. Each run gets an independent PhotoSift-runid destination under the export root. Nothing is copied at this point.
+3. Inspect every source and destination in the paginated plan. Type COPY APPROVED and click Approve to start the separate worker.
+4. The worker verifies each source size and hash, copies to an exclusive temporary file, verifies the output, preserves file metadata and publishes without overwriting any existing filename. Every operation is journaled. A changed source or destination conflict is marked Failed, never silently overwritten.
+5. Manifest files manifest.csv and manifest.json capture original/new paths, hashes, category, decision, model reason, date/date source and operation results. The operation journal survives restart and skips previously successful copies. An output linked before its ownership was journaled is conservatively reported as a conflict, not deleted.
+6. Completed runs support a typed ROLLBACK COPIES action. Rollback deletes only run-owned output files whose current hash still matches the verified journal; modified outputs remain untouched and cause partial rollback. A failed operation can be retried explicitly without repeating completed copies.
+
+Photos go under Organized/Photos/YYYY/YYYY-MM, documents under Organized/Documents, screenshots under Organized/Screenshots, graphics under Organized/Memes-and-Graphics, other under Organized/Other, deferred items under Organized/Review-Later and optional clutter under Clutter. EXIF or filename dates take priority; mtime fallback is documented as less reliable. No original image is ever moved, renamed, modified or deleted.
+
+### M6 API
+
+- GET /api/exports/status: destination availability
+- POST /api/exports/plans: immutable preview plan, optional include_clutter boolean
+- GET /api/exports and GET /api/exports/{id}: recent runs and paginated operations
+- POST /api/exports/{id}/action: approve, retry, rollback, rollback_errors or cancel plus exact confirmation phrase
+
+M6 adds immutable migration 002_export_metadata.sql. Run backend tests and frontend build before deployment. First test on a small reviewed sample; full exports may use significant space. GitHub commits do not automatically replace a running ZimaOS container.

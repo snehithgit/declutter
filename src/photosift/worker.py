@@ -12,6 +12,7 @@ from .config import load_settings
 from .db import connect, initialize
 from .inventory import next_scan_job, run_scan
 from .classification import next_classification_job, run_classification
+from .export import next_export_job, run_export, rollback_export
 from .logging_setup import configure_logging
 
 LEASE_SECONDS = 15
@@ -87,7 +88,15 @@ def run_worker(config_path: str, stop: StopEvent) -> None:
                 if classification:
                     run_classification(settings, classification, combined)
                 else:
-                    stop.wait(1)
+                    exporting = next_export_job(settings)
+                    if exporting:
+                        export_id, state = exporting
+                        if state == "rollback_requested":
+                            rollback_export(settings, export_id)
+                        else:
+                            run_export(settings, export_id, combined)
+                    else:
+                        stop.wait(1)
         if lost.is_set():
             raise RuntimeError("Worker lost its database lease")
     finally:

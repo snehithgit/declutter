@@ -65,6 +65,7 @@ class Classification(StrictModel):
 
 class Settings(StrictModel):
     data_dir: Path
+    export_dir: Path | None = None
     library_roots: list[str] = Field(default_factory=list)
     server: Server = Field(default_factory=Server)
     ollama: Ollama = Field(default_factory=Ollama)
@@ -103,6 +104,8 @@ def load_settings(config_path: Path) -> Settings:
     config_path = config_path.resolve()
     with config_path.open("rb") as stream:
         raw = tomllib.load(stream)
+    if "PHOTOSIFT_EXPORT_DIR" in os.environ:
+        raw["export_dir"] = os.environ["PHOTOSIFT_EXPORT_DIR"] or None
     if "PHOTOSIFT_OLLAMA_URL" in os.environ:
         raw.setdefault("ollama", {})["url"] = os.environ["PHOTOSIFT_OLLAMA_URL"]
     settings = Settings.model_validate(raw)
@@ -111,6 +114,19 @@ def load_settings(config_path: Path) -> Settings:
         raise ValueError("data_dir must use local storage")
     settings.data_dir = (config_path.parent / settings.data_dir.expanduser()).resolve()
     require_local_storage(settings.data_dir)
+    if settings.export_dir is not None:
+        export_text = str(settings.export_dir)
+        if export_text.startswith(("\\\\", "//")):
+            raise ValueError("export_dir cannot use a network path")
+        candidate = config_path.parent / settings.export_dir.expanduser()
+        if candidate.is_symlink():
+            raise ValueError("export_dir cannot be a symlink")
+        settings.export_dir = candidate.resolve()
+        require_local_storage(settings.export_dir)
+        if settings.export_dir == settings.data_dir or (
+            settings.export_dir in settings.data_dir.parents or settings.data_dir in settings.export_dir.parents
+        ):
+            raise ValueError("Export and app data must use separate locations")
     roots: list[str] = []
     for root in settings.library_roots:
         if not root.strip():
@@ -123,4 +139,9 @@ def load_settings(config_path: Path) -> Settings:
     if len({path_key(root) for root in roots}) != len(roots):
         raise ValueError("duplicate library roots")
     settings.library_roots = roots
+    if settings.export_dir:
+        for source in map(Path,roots):
+            if (source == settings.export_dir or source in settings.export_dir.parents
+                    or settings.export_dir in source.parents):
+                raise ValueError("Export and source library paths must not overlap")
     return settings

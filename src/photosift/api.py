@@ -24,6 +24,7 @@ from .db import connect, initialize
 from .duplicates import duplicate_summary, list_duplicate_groups, duplicate_group_files
 from .classification import queue_classification, classification_jobs, recent_predictions
 from .review import ReviewFilters, ReviewChange, review_page, review_summary, review_detail, review_copies, review_history, apply_review
+from .export import create_plan, export_root, export_list, export_detail, set_export_state, ExportError
 from .logging_setup import configure_logging
 from .worker import LEASE_SECONDS
 
@@ -35,6 +36,15 @@ class ScanRequest(BaseModel):
 class ClassificationRequest(BaseModel):
     force: bool = False
     limit: int | None = Field(default=None, ge=1, le=100000)
+
+
+class ExportPlanRequest(BaseModel):
+    include_clutter: bool = False
+
+
+class ExportAction(BaseModel):
+    action: Literal["approve","retry","rollback","rollback_errors","cancel"]
+    confirmation: str
 
 
 class JobAction(BaseModel):
@@ -82,16 +92,16 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
             worker = db.execute("SELECT heartbeat FROM worker_leases WHERE name='main'").fetchone()
             journal = db.execute("PRAGMA journal_mode").fetchone()[0]
         alive = bool(worker and time.time() - worker["heartbeat"] < LEASE_SECONDS)
-        return {"status": "ok" if alive else "degraded", "version": __version__, "milestone": "M5",
+        return {"status": "ok" if alive else "degraded", "version": __version__, "milestone": "M6",
                 "database": {"schema_version": version, "journal_mode": journal},
                 "worker": {"state": "ready" if alive else "offline"},
-                "features": {"inventory": True, "duplicates": True, "classification": True, "review": True, "export": False}}
+                "features": {"inventory": True, "duplicates": True, "classification": True, "review": True, "export": True}}
 
     @app.get("/api/settings")
     def public_settings() -> dict:
         return {"data_dir": str(settings.data_dir), "library_roots": settings.library_roots,
                 "ollama": settings.ollama.model_dump(), "images": settings.images.model_dump(),
-                "classification": settings.classification.model_dump(), "ollama_checked": False}
+                "classification": settings.classification.model_dump(), "ollama_checked": False, "export_configured": settings.export_dir is not None}
 
     @app.get("/api/inventory")
     def inventory() -> dict:
@@ -325,6 +335,44 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
         if item is None:
             raise HTTPException(404,"Review image not found")
         return item
+
+    @app.get("/api/exports/status")
+    def export_status() -> dict:
+        try:
+            folder = export_root(settings)
+            return {"configured": folder is not None, "destination": str(folder) if folder else None,
+                    "message": "Ready for approved copy-only exports" if folder else
+                    "Configure a separate writable export directory"}
+        except ExportError as exc:
+            return {"configured": False, "destination": None, "message": str(exc)}
+
+    @app.get("/api/exports")
+    def export_runs() -> list[dict]:
+        return export_list(settings)
+
+    @app.post("/api/exports/plans", status_code=201)
+    def plan_export(request: ExportPlanRequest) -> dict:
+        try:
+            return create_plan(settings, include_clutter=request.include_clutter)
+        except ExportError as exc:
+            raise HTTPException(409,str(exc)) from exc
+
+    @app.get("/api/exports/{run_id}")
+    def export_plan(run_id: str, limit: int = Query(default=100,ge=1,le=300),
+                    offset: int = Query(default=0,ge=0)) -> dict:
+        try:
+            return export_detail(settings,run_id,limit,offset)
+        except LookupError as exc:
+            raise HTTPException(404,str(exc)) from exc
+
+    @app.post("/api/exports/{run_id}/action")
+    def export_action(run_id: str, request: ExportAction) -> dict:
+        try:
+            return set_export_state(settings,run_id,request.action,request.confirmation)
+        except LookupError as exc:
+            raise HTTPException(404,str(exc)) from exc
+        except ExportError as exc:
+            raise HTTPException(409,str(exc)) from exc
 
     def media(digest: str, kind: Literal["thumbnails", "previews"]) -> FileResponse:
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):

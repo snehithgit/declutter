@@ -1,5 +1,7 @@
 # Relative paths are relative to this configuration file.
 data_dir = "./data"
+# Explicitly enable copy exports only after creating a separate writable directory:
+# export_dir = "./exports"
 library_roots = []
 
 [server]

@@ -58,7 +58,7 @@ def test_migrations_idempotent_and_preserve_records(config_file: Path):
     with connect(settings.data_dir) as db:
         assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
         assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
         assert db.execute("SELECT decision FROM reviews").fetchone() is None
@@ -100,7 +100,7 @@ def test_api_never_scans_and_reports_worker(config_file: Path):
         assert health["features"]["inventory"] is True
         assert health["features"]["classification"] is True
         assert health["features"]["review"] is True
-        assert health["features"]["export"] is False
+        assert health["features"]["export"] is True
         assert client.get("/api/settings").json()["ollama_checked"] is False
         assert client.post("/api/scan").status_code == 404
         assert client.get("/api/health", headers={"host": "attacker.invalid"}).status_code == 400

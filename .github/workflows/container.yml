@@ -104,9 +104,19 @@ jobs:
             [ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
               http://127.0.0.1:8765/api/reviews/invalid)" = "404" ]
           }
+          verify_exports() {
+            curl --silent --show-error --fail http://127.0.0.1:8765/api/exports/status | \
+              python -c 'import json,sys; d=json.load(sys.stdin); assert d["configured"] is False,d'
+            curl --silent --show-error --fail http://127.0.0.1:8765/api/exports | \
+              python -c 'import json,sys; assert json.load(sys.stdin)==[]'
+            [ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              -X POST -H 'Content-Type: application/json' -d '{}' \
+              http://127.0.0.1:8765/api/exports/plans)" = "409" ]
+          }
           wait_for_ready
           verify_duplicates
           verify_reviews
+          verify_exports
           curl --silent --show-error --fail http://127.0.0.1:8765/api/health | \
             python -c 'import json,sys; d=json.load(sys.stdin); assert d["features"]["classification"] is True'
           curl --silent --show-error --fail http://127.0.0.1:8765/api/classification/jobs | \
@@ -121,6 +131,7 @@ jobs:
           wait_for_ready
           verify_duplicates
           verify_reviews
+          verify_exports
       - name: Container diagnostics and cleanup
         if: always()
         run: |
