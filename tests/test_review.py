@@ -106,6 +106,9 @@ def test_validation_atomicity_and_disabled_sources(collection):
         db.execute("INSERT INTO jobs(id,kind,root_id) VALUES (?,'inventory',?)",(job,roots["camera"]))
     run_scan(settings,job,roots["camera"],a,Event())
     with TestClient(create_app(settings)) as client:
+        # Startup reloads configured roots; explicitly disable the backup root afterward.
+        with connect(settings.data_dir) as db:
+            db.execute("UPDATE library_roots SET enabled=0 WHERE id=?",(roots["backup"],))
         assert client.post("/api/reviews/bulk",json={"hashes":[first],"decision":"keep"}).status_code==409
         assert client.get("/api/reviews").json()["total"]==1
 
