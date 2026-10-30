@@ -132,3 +132,40 @@ def test_empty_inventory_and_single_instance_have_no_groups(setup):
     with TestClient(create_app(settings)) as client:
         assert client.get("/api/duplicates/summary").json()["groups"] == 0
         assert client.get("/api/duplicates").json()["total"] == 0
+
+
+def test_disabled_root_is_excluded_without_erasing_inventory(setup):
+    settings, camera, backups, roots = setup
+    image(camera / "live.jpg", (6, 42, 99))
+    shutil.copy2(camera / "live.jpg", backups / "archived.jpg")
+    scan(settings, camera, roots["camera"])
+    scan(settings, backups, roots["backups"])
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/api/duplicates/summary").json()["groups"] == 1
+        with connect(settings.data_dir) as db:
+            db.execute("UPDATE library_roots SET enabled=0 WHERE id=?", (roots["backups"],))
+        assert client.get("/api/duplicates/summary").json()["groups"] == 0
+        assert client.get("/api/duplicates").json()["total"] == 0
+    with connect(settings.data_dir) as db:
+        assert db.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 2
+
+
+def test_disabled_instance_kept_in_group_history(setup):
+    settings, camera, backups, roots = setup
+    image(camera / "first.jpg", (12, 30, 99))
+    shutil.copy2(camera / "first.jpg", camera / "second.jpg")
+    shutil.copy2(camera / "first.jpg", backups / "third.jpg")
+    scan(settings, camera, roots["camera"])
+    scan(settings, backups, roots["backups"])
+    digest = hashlib.sha256((camera / "first.jpg").read_bytes()).hexdigest()
+    with TestClient(create_app(settings)) as client:
+        with connect(settings.data_dir) as db:
+            db.execute("UPDATE library_roots SET enabled=0 WHERE id=?", (roots["backups"],))
+        group = client.get(f"/api/duplicates/{digest}/files").json()
+        assert group["copy_count"] == 2
+        assert group["inactive_count"] == 1
+        assert group["missing_count"] == 0
+        assert group["total"] == 3
+        archived = next(f for f in group["items"] if f["relative_path"] == "third.jpg")
+        assert archived["root_enabled"] == 0
+        assert client.get("/api/duplicates/summary").json()["extra_copies"] == 1

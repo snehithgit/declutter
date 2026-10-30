@@ -1,7 +1,7 @@
 """Exact duplicates derived from the existing SHA-256 content identity.
 
-Only known-present files count toward duplicate groups. Historical missing
-instances are retained in a group's details, never treated as deletions.
+Only known-present files in enabled roots count as duplicates. Historical missing
+and disabled-root instances remain in details, never treated as deletions.
 This module reads the inventory database only; no source file is opened.
 """
 from __future__ import annotations
@@ -11,10 +11,10 @@ import sqlite3
 # Existing files(content_hash) index supports grouping and per-content lookups.
 # Do not persist a second, potentially stale grouping table.
 _GROUPS = """
-    SELECT content_hash, COUNT(*) AS copy_count, MIN(id) AS example_file_id
-    FROM files
-    WHERE missing=0 AND content_hash IS NOT NULL
-    GROUP BY content_hash
+    SELECT f.content_hash, COUNT(*) AS copy_count, MIN(f.id) AS example_file_id
+    FROM files f JOIN library_roots r ON r.id=f.root_id
+    WHERE f.missing=0 AND r.enabled=1 AND f.content_hash IS NOT NULL
+    GROUP BY f.content_hash
     HAVING COUNT(*) >= 2
 """
 
@@ -69,8 +69,11 @@ def list_duplicate_groups(db: sqlite3.Connection, limit: int, offset: int, sort:
 def duplicate_group_files(db: sqlite3.Connection, digest: str, limit: int, offset: int) -> dict | None:
     content = db.execute("""
         SELECT c.sha256 AS content_hash, c.size AS size_bytes, c.thumbnail_path, c.preview_path,
-               (SELECT COUNT(*) FROM files f WHERE f.content_hash=c.sha256 AND f.missing=0) AS copy_count,
-               (SELECT COUNT(*) FROM files f WHERE f.content_hash=c.sha256 AND f.missing=1) AS missing_count
+               (SELECT COUNT(*) FROM files f JOIN library_roots r ON r.id=f.root_id
+                 WHERE f.content_hash=c.sha256 AND f.missing=0 AND r.enabled=1) AS copy_count,
+               (SELECT COUNT(*) FROM files f WHERE f.content_hash=c.sha256 AND f.missing=1) AS missing_count,
+               (SELECT COUNT(*) FROM files f JOIN library_roots r ON r.id=f.root_id
+                 WHERE f.content_hash=c.sha256 AND (f.missing=1 OR r.enabled=0)) AS inactive_count
         FROM contents c WHERE c.sha256=?
     """, (digest,)).fetchone()
     if content is None or content["copy_count"] < 2:
@@ -78,17 +81,18 @@ def duplicate_group_files(db: sqlite3.Connection, digest: str, limit: int, offse
     rows = _as_dicts(db.execute("""
         SELECT f.id, f.root_id, r.path AS root_path, f.relative_path, f.size,
                f.format, f.width, f.height, f.capture_time, f.date_source,
-               f.missing, f.readable, f.error
+               f.missing, r.enabled AS root_enabled, f.readable, f.error
         FROM files f JOIN library_roots r ON r.id=f.root_id
         WHERE f.content_hash=?
-        ORDER BY f.missing ASC, r.path COLLATE NOCASE ASC,
+        ORDER BY CASE WHEN f.missing=0 AND r.enabled=1 THEN 0 ELSE 1 END,
+                 r.path COLLATE NOCASE ASC,
                  f.relative_path COLLATE NOCASE ASC, f.id ASC
         LIMIT ? OFFSET ?
     """, (digest, limit, offset)))
     payload = _urls(dict(content))
     payload["extra_copies"] = payload["copy_count"] - 1
     payload["potential_reclaim_bytes"] = payload["extra_copies"] * payload["size_bytes"]
-    payload["total"] = payload["copy_count"] + payload["missing_count"]
+    payload["total"] = payload["copy_count"] + payload["inactive_count"]
     payload["items"] = rows
     payload["limit"] = limit
     payload["offset"] = offset

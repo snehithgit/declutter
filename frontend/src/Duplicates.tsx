@@ -6,8 +6,8 @@ type Group = { content_hash: string; copy_count: number; extra_copies: number; s
   potential_reclaim_bytes: number; thumbnail_url: string | null; sample_path: string; sample_format: string | null };
 type GroupPage = { total: number; items: Group[] };
 type Copy = { id: number; root_path: string; relative_path: string; size: number; format: string | null;
-  width: number | null; height: number | null; missing: number; capture_time: string | null; error: string | null };
-type Copies = { content_hash: string; copy_count: number; missing_count: number; size_bytes: number;
+  width: number | null; height: number | null; missing: number; root_enabled: number; capture_time: string | null; error: string | null };
+type Copies = { content_hash: string; copy_count: number; missing_count: number; inactive_count: number; size_bytes: number;
   preview_url: string | null; total: number; items: Copy[] };
 const number = (n: number) => new Intl.NumberFormat().format(n);
 const bytes = (n: number) => n >= 1073741824 ? (n / 1073741824).toFixed(2) + ' GB' :
@@ -46,7 +46,7 @@ export default function Duplicates() {
       }
     }
     void load();
-    const timer = window.setInterval(() => void load(), 7000);
+    const timer = window.setInterval(() => void load(), 20000);
     return () => { live = false; window.clearInterval(timer); };
   }, [offset, sort, refresh]);
 
@@ -65,7 +65,7 @@ export default function Duplicates() {
       }
     }
     void load();
-    const timer = window.setInterval(() => void load(), 7000);
+    const timer = window.setInterval(() => void load(), 20000);
     return () => { live = false; window.clearInterval(timer); };
   }, [selected, copyOffset, refresh]);
 
@@ -133,10 +133,10 @@ export default function Duplicates() {
           <div className="duplicate-preview">{details.preview_url ?
             <img src={details.preview_url} alt="Representative duplicate"/> : <span>Preview unavailable</span>}</div>
           <div className="duplicate-detail-stats">{number(details.copy_count)} present copies ·
-            {' '}{number(details.missing_count)} previously seen but missing · {bytes(details.size_bytes)} each</div>
+            {' '}{number(details.inactive_count)} missing / inactive records · {bytes(details.size_bytes)} each</div>
           <div className="duplicate-hash" title={details.content_hash}>SHA-256: {details.content_hash}</div>
           <div className="duplicate-copy-list">{details.items.map(copy => <div className="duplicate-copy" key={copy.id}>
-            <div className="duplicate-copy-top"><strong>{copy.missing ? 'Previously seen · Missing' : 'Present at last scan'}</strong>
+            <div className="duplicate-copy-top"><strong>{copy.missing ? 'Previously seen · Missing' : !copy.root_enabled ? 'Library disabled' : 'Present at last scan'}</strong>
               <span>{bytes(copy.size)}</span></div>
             <div className="duplicate-path">{fullPath(copy)}</div>
             <small>{copy.format || 'Unknown format'}{copy.width && copy.height ?

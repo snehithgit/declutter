@@ -163,15 +163,15 @@ The AI classification milestone (M4) is not enabled. Review the inventory and ex
 
 Select **Duplicates** in the sidebar or mobile switcher after running an M2 inventory scan.
 PhotoSift groups files by their full SHA-256 content hash across all configured roots,
-regardless of filename or extension. A group requires at least two **known-present**
-instances; missing historical instances do not count toward a duplicate match.
+regardless of filename or extension. A group requires at least two **known-present files in enabled roots**.
+Missing files and files under disabled roots are retained for history but do not count as active duplicates.
 These groups are computed directly from existing `files.content_hash` records and
 `contents`; no additional scan, migration, GPU inference, or persistent regroup job is needed.
 
 The view provides duplicate-group count, total matching files, extra copies,
 potential extra space, sorting (potential space, copy count, file size),
 stable pagination, cached thumbnails, and detailed paginated paths for every copy.
-Historical missing paths remain visible in a group's details whenever two present
+Historical missing/disabled-root paths remain visible in a group's details whenever at least two active
 instances still exist. All status information is based on the last inventory
 record; disconnected roots are not silently marked missing. Duplicate storage
 is an estimate, not guaranteed disk space savings (hard links can share storage).
