@@ -244,3 +244,39 @@ def test_d3_uses_decision_api_and_preserves_raw_scores(env, monkeypatch):
     payload["answers"]["contains_people"]["noul"] = 1.5
     with pytest.raises(InvalidPrediction):
         parse_prediction(json.dumps(payload))
+
+def test_folder_scope_browser_and_queue(env, monkeypatch):
+    import json
+    import photosift.classification as cls
+    settings, library = env
+    for name, color in [('Family/nested/a.jpg','red'), ('Family2/b.jpg','green'), ('literal%_/c.jpg','blue')]:
+        path = library / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (640,480), color).save(path)
+    shutil.copy2(library/'first.jpg', library/'Family'/'copy.jpg')
+    with connect(settings.data_dir) as db:
+        root = db.execute('SELECT id FROM library_roots').fetchone()[0]
+        jid = uuid.uuid4().hex
+        db.execute("INSERT INTO jobs(id,kind,root_id) VALUES (?,'inventory',?)", (jid,root))
+    run_scan(settings,jid,root,library,Event())
+    client = TestClient(create_app(settings))
+    assert client.get('/api/classification/options').json()['roots'][0]['id'] == root
+    page = client.get('/api/classification/folders',params={'root_id':root,'folder':'Family'}).json()
+    assert page['images'] == page['pending'] == 2
+    assert page['children'] == [{'name':'nested','folder':'Family/nested','images':1}]
+    assert cls.classification_folders(settings,root,'literal%_')['images'] == 1
+    assert cls.classification_folders(settings,root,limit=1)['total'] == 3
+    assert len(cls.classification_folders(settings,root,offset=1,limit=1)['children']) == 1
+    for folder in ['/Family','../Family','Family/../Family2','Family\\nested','C:/Family']:
+        assert client.post('/api/classification/jobs',json={'root_id':root,'folder':folder}).status_code == 409
+    assert client.get('/api/classification/folders',params={'root_id':999}).status_code == 422
+    result = client.post('/api/classification/jobs',json={'root_id':root,'folder':'Family'}).json()
+    assert result['queued'] == 2
+    with connect(settings.data_dir) as db:
+        params = json.loads(db.execute('SELECT parameters_json FROM jobs WHERE id=?',(result['job_id'],)).fetchone()[0])
+        assert params['folder'] == 'Family' and params['root_id'] == root
+    monkeypatch.setattr(cls,'call_ollama',lambda *a,**kw:(GOOD,1))
+    run_classification(settings,result['job_id'],Event())
+    assert cls.classification_folders(settings,root,'Family')['pending'] == 0
+    assert cls.classification_folders(settings,root,'Family2')['pending'] == 1
+    assert queue_classification(settings,root_id=root,folder='Family')['queued'] == 0

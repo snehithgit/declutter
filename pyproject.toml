@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "photosift"
-version = "0.8.1"
+version = "0.8.2"
 description = "Local photo decluttering with a persistent worker and remote Ollama"
 requires-python = ">=3.12"
 dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "pydantic>=2.10,<3", "Pillow>=11,<13", "pillow-heif>=1,<2"]

@@ -22,7 +22,7 @@ from . import __version__
 from .config import Settings
 from .db import connect, initialize
 from .duplicates import duplicate_summary, list_duplicate_groups, duplicate_group_files
-from .classification import queue_classification, classification_jobs, recent_predictions
+from .classification import queue_classification, classification_jobs, recent_predictions, classification_folders, PROMPT_VERSION
 from .review import ReviewFilters, ReviewChange, review_page, review_summary, review_detail, review_copies, review_history, review_selection, apply_review
 from .export import create_plan, export_root, export_list, export_detail, set_export_state, ExportError
 from .logging_setup import configure_logging
@@ -34,6 +34,8 @@ class ScanRequest(BaseModel):
 
 
 class ClassificationRequest(BaseModel):
+    root_id: int | None = Field(default=None, ge=1)
+    folder: str = Field(default="", max_length=4096)
     force: bool = False
     limit: int | None = Field(default=None, ge=1, le=100000)
 
@@ -235,6 +237,20 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
             db.commit()
         return {"id": job_id, "state": new}
 
+    @app.get("/api/classification/options")
+    def classification_options() -> dict:
+        with connect(settings.data_dir) as db:
+            roots = [dict(r) for r in db.execute("SELECT id,path FROM library_roots WHERE enabled=1 ORDER BY path")]
+        return {"roots": roots, "prompt_version": PROMPT_VERSION, "concurrency": settings.ollama.concurrency}
+
+    @app.get("/api/classification/folders")
+    def classification_folder_list(root_id: int = Query(ge=1), folder: str = Query(default="", max_length=4096),
+                                   offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=200)) -> dict:
+        try:
+            return classification_folders(settings, root_id, folder, offset, limit)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     @app.get("/api/classification/jobs")
     def classification_list() -> list[dict]:
         return classification_jobs(settings)
@@ -246,7 +262,8 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
     @app.post("/api/classification/jobs", status_code=201)
     def new_classification(request: ClassificationRequest) -> dict:
         try:
-            return queue_classification(settings, force=request.force, limit=request.limit)
+            return queue_classification(settings, force=request.force, limit=request.limit,
+                                        root_id=request.root_id, folder=request.folder)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 

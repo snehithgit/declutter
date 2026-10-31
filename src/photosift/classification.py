@@ -163,23 +163,73 @@ def parse_prediction(raw: str) -> Prediction:
     except (ValidationError, ValueError) as exc:
         raise InvalidPrediction(str(exc)[:500]) from exc
 
-def queue_classification(settings: Settings, force: bool = False, limit: int | None = None) -> dict:
+def _folder_scope(db, root_id: int | None, folder: str) -> tuple[str, list, str | None]:
+    if folder and root_id is None:
+        raise ValueError("Select a library for a folder")
+    if "\\" in folder or ":" in folder or "\x00" in folder or (folder and any(
+            part in ("", ".", "..") for part in folder.split("/"))):
+        raise ValueError("Folder must be a relative indexed folder path")
+    root = None
+    if root_id is not None:
+        root = db.execute("SELECT path FROM library_roots WHERE id=? AND enabled=1", (root_id,)).fetchone()
+        if root is None:
+            raise ValueError("Library is unavailable or disabled")
+    clause, args = "", []
+    if root_id is not None:
+        clause += " AND f.root_id=?"
+        args.append(root_id)
+    if folder:
+        prefix = folder + "/"
+        clause += " AND substr(f.relative_path,1,?)=?"
+        args.extend([len(prefix), prefix])
+    return clause, args, root["path"] if root else None
+
+
+def classification_folders(settings: Settings, root_id: int, folder: str = "",
+                           offset: int = 0, limit: int = 100) -> dict:
+    with connect(settings.data_dir) as db:
+        clause, args, root_path = _folder_scope(db, root_id, folder)
+        base = """ FROM files f JOIN contents c ON c.sha256=f.content_hash
+            WHERE f.missing=0 AND f.analysis_supported=1 AND c.preview_path IS NOT NULL""" + clause
+        counts = db.execute("""SELECT COUNT(DISTINCT c.sha256) AS images,
+            COUNT(DISTINCT CASE WHEN NOT EXISTS (SELECT 1 FROM ai_results a
+            WHERE a.content_hash=c.sha256 AND a.model_tag=? AND a.prompt_version=?)
+            THEN c.sha256 END) AS pending""" + base,
+            [settings.ollama.model, PROMPT_VERSION, *args]).fetchone()
+        start = len(folder) + 2 if folder else 1
+        children_sql = """SELECT substr(rest,1,instr(rest,'/')-1) AS name,
+            COUNT(DISTINCT content_hash) AS images FROM (
+            SELECT substr(f.relative_path,?) AS rest,f.content_hash""" + base + """
+            ) WHERE instr(rest,'/')>0 GROUP BY name"""
+        total = db.execute("SELECT COUNT(*) FROM (" + children_sql + ")", [start, *args]).fetchone()[0]
+        children = db.execute(children_sql + " ORDER BY name LIMIT ? OFFSET ?",
+                              [start, *args, limit, offset]).fetchall()
+        return {"root_path": root_path, "folder": folder, "images": counts["images"],
+                "pending": counts["pending"], "total": total,
+                "children": [{"name": r["name"], "folder": (folder + "/" if folder else "") + r["name"],
+                              "images": r["images"]} for r in children]}
+
+
+def queue_classification(settings: Settings, force: bool = False, limit: int | None = None,
+                         root_id: int | None = None, folder: str = "") -> dict:
     with connect(settings.data_dir) as db:
         db.execute("BEGIN IMMEDIATE")
+        scope, scope_args, root_path = _folder_scope(db, root_id, folder)
         running = db.execute("SELECT id FROM jobs WHERE kind='classification' AND state IN ('queued','running','paused') LIMIT 1").fetchone()
         if running:
             db.rollback()
             raise ValueError(f"Finish or cancel classification job {running['id']} first")
         job_id = uuid.uuid4().hex
         params = json.dumps({"model": settings.ollama.model, "prompt_version": PROMPT_VERSION,
-                             "protocol": settings.ollama.protocol, "force": force})
+                             "protocol": settings.ollama.protocol, "force": force,
+                             "root_id": root_id, "root_path": root_path, "folder": folder})
         db.execute("INSERT INTO jobs(id,kind,parameters_json) VALUES (?,'classification',?)", (job_id, params))
         clause = "" if force else """ AND NOT EXISTS (
             SELECT 1 FROM ai_results a WHERE a.content_hash=c.sha256 AND a.model_tag=? AND a.prompt_version=?)"""
-        args = [] if force else [settings.ollama.model, PROMPT_VERSION]
+        args = scope_args + ([] if force else [settings.ollama.model, PROMPT_VERSION])
         sql = """SELECT c.sha256 FROM contents c WHERE c.preview_path IS NOT NULL
              AND EXISTS (SELECT 1 FROM files f JOIN library_roots r ON r.id=f.root_id
-             WHERE f.content_hash=c.sha256 AND f.missing=0 AND r.enabled=1 AND f.analysis_supported=1)""" + clause
+             WHERE f.content_hash=c.sha256 AND f.missing=0 AND r.enabled=1 AND f.analysis_supported=1""" + scope + ")" + clause
         sql += " ORDER BY c.sha256" + (" LIMIT ?" if limit is not None else "")
         hashes = db.execute(sql, (*args, limit) if limit is not None else args).fetchall()
         for row in hashes:

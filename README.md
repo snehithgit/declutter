@@ -353,3 +353,7 @@ After the image build passes, pull and recreate the Zima service; rebuilding Git
 alone does not change an already running container. Keep `/data` unchanged and back up
 SQLite before upgrading. Sources remain read-only, and actual exports still require
 explicit plan approval. Use generated test images for initial end-to-end verification.
+
+### Classify a selected folder
+
+Scan your library in Overview, then open AI classification. Select a library and browse to a folder before starting. The selected folder includes all its subfolders. Counts show unique supported images with cached previews and those still awaiting the configured model/prompt. Exact duplicates share results across folders. Job scope is saved when queued and stays fixed on resume.
