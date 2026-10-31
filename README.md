@@ -357,3 +357,7 @@ explicit plan approval. Use generated test images for initial end-to-end verific
 ### Classify a selected folder
 
 Scan your library in Overview, then open AI classification. Select a library and browse to a folder before starting. The selected folder includes all its subfolders. Counts show unique supported images with cached previews and those still awaiting the configured model/prompt. Exact duplicates share results across folders. Job scope is saved when queued and stays fixed on resume.
+
+### Bulk decisions by content group
+
+Review automatically groups existing results into Personal, Documents, Food, Memes / graphics, Screenshots, Other and Unclassified. Food photos with detected people stay Personal. Manual category corrections take precedence. Group cards count undecided unique images across all libraries; clicking a card resets filters and shows that group's undecided images. Select all matching freezes the whole group across pages (up to 100,000 images), then Keep, Clutter or Review later applies one audited bulk decision. Filters can narrow the selection by library, confidence or importance. Content groups include low-confidence results and are not automatic junk decisions. Approved copy exports can place Clutter copies in a separate Clutter folder; originals remain read-only.

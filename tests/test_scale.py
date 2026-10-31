@@ -4,7 +4,7 @@ import time
 
 from photosift.config import load_settings
 from photosift.db import initialize, connect
-from photosift.review import ReviewFilters, review_page, review_selection
+from photosift.review import ReviewFilters, review_page, review_selection, review_summary
 
 
 def test_review_pagination_and_frozen_scope_at_100k(tmp_path: Path):
@@ -25,7 +25,9 @@ def test_review_pagination_and_frozen_scope_at_100k(tmp_path: Path):
         db.commit()
         start = time.monotonic()
         page = review_page(db, ReviewFilters(), 120, 99_840)
-        snapshot = review_selection(db, ReviewFilters())
+        snapshot = review_selection(db, ReviewFilters(bucket="unclassified"))
+        summary = review_summary(db)
+        assert summary["suggested_unclassified"] == count
         elapsed = time.monotonic() - start
     assert page["total"] == snapshot["total"] == count
     assert len(page["items"]) == 120

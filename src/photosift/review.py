@@ -17,6 +17,7 @@ MAX_BULK = 100_000
 
 
 class ReviewFilters(BaseModel):
+    bucket: Literal["personal", "documents", "food", "memes", "screenshots", "other", "unclassified"] | None = None
     category: Category | Literal["unclassified"] | None = None
     review_status: Decision | None = None
     uncertain: bool | None = None
@@ -88,7 +89,17 @@ SELECT i.content_hash,i.copy_count,f.id AS sample_file_id,f.relative_path AS sam
        a.id AS ai_id,a.category AS ai_category,a.subcategory,a.confidence,a.reason,
        a.possibly_important,a.importance_reason,a.contains_people,a.contains_text,
        a.uncertain,a.model_tag,a.prompt_version,a.created_at AS ai_date,
-       COALESCE(r.category_override,a.category) AS effective_category
+       COALESCE(r.category_override,a.category) AS effective_category,
+       CASE
+         WHEN r.category_override='personal_photo' THEN 'personal'
+         WHEN COALESCE(r.category_override,a.category)='document' THEN 'documents'
+         WHEN COALESCE(r.category_override,a.category)='screenshot' THEN 'screenshots'
+         WHEN COALESCE(r.category_override,a.category)='meme_graphic' THEN 'memes'
+         WHEN a.subcategory='food' AND a.contains_people=0
+              AND COALESCE(r.category_override,a.category) IN ('personal_photo','other') THEN 'food'
+         WHEN COALESCE(r.category_override,a.category)='personal_photo' THEN 'personal'
+         WHEN COALESCE(r.category_override,a.category) IS NULL THEN 'unclassified'
+         ELSE 'other' END AS suggested_bucket
 FROM instances i JOIN files f ON f.id=i.sample_id
  JOIN contents c ON c.sha256=i.content_hash
  LEFT JOIN reviews r ON r.content_hash=i.content_hash
@@ -103,6 +114,9 @@ def _escape_like(value: str) -> str:
 def _query(filters: ReviewFilters) -> tuple[str, list]:
     conditions: list[str] = []
     params: list = []
+    if filters.bucket:
+        conditions.append("q.suggested_bucket=?")
+        params.append(filters.bucket)
     if filters.category == "unclassified":
         conditions.append("q.effective_category IS NULL")
     elif filters.category:
@@ -200,6 +214,8 @@ def review_summary(db: sqlite3.Connection) -> dict:
                      ",".join(f"SUM(CASE WHEN q.decision='{d}' THEN 1 ELSE 0 END) AS {d}"
                               for d in ("keep","clutter","review_later","undecided")) +
                      ",SUM(CASE WHEN q.ai_id IS NOT NULL THEN 1 ELSE 0 END) AS classified " +
+                     "," + ",".join(f"SUM(CASE WHEN q.suggested_bucket='{b}' AND q.decision='undecided' THEN 1 ELSE 0 END) AS suggested_{b}"
+                                    for b in ("personal", "documents", "food", "memes", "screenshots", "other", "unclassified")) + " " +
                      "FROM (" + sql + ") q").fetchone()
     return {field: int(row[field] or 0) for field in row.keys()}
 

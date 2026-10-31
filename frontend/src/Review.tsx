@@ -7,7 +7,7 @@ import type {Scope} from './state.mjs';
 type Decision='undecided'|'keep'|'clutter'|'review_later';
 type Category='personal_photo'|'screenshot'|'meme_graphic'|'document'|'other';
 type Filters={
- category:string;review_status:string;uncertain:string;important:string;root_id:string;
+ bucket:string;category:string;review_status:string;uncertain:string;important:string;root_id:string;
  folder:string;search:string;date_from:string;date_to:string;duplicates_only:string;blurry:string;low_res:string
 };
 type Photo={
@@ -23,12 +23,12 @@ type Audit={id:number;created_at:string;before:{decision:Decision;category_overr
  after:{decision:Decision;category_override:Category|null}};
 type Detail=Photo&{copies:Copy[];copy_total:number;history:Audit[]};
 type Page={total:number;items:Photo[]};
-type Summary={total:number;keep:number;clutter:number;review_later:number;undecided:number;classified:number};
+type Summary={suggested_personal:number;suggested_documents:number;suggested_food:number;suggested_memes:number;suggested_screenshots:number;suggested_other:number;suggested_unclassified:number;total:number;keep:number;clutter:number;review_later:number;undecided:number;classified:number};
 type Root={id:number;path:string;enabled:number};
 const categories:Category[]=['personal_photo','screenshot','meme_graphic','document','other'];
-const initial:Filters={category:'',review_status:'',uncertain:'',important:'',root_id:'',
+const initial:Filters={bucket:'',category:'',review_status:'',uncertain:'',important:'',root_id:'',
  folder:'',search:'',date_from:'',date_to:'',duplicates_only:'',blurry:'',low_res:''};
-const empty:Summary={total:0,keep:0,clutter:0,review_later:0,undecided:0,classified:0};
+const empty:Summary={suggested_personal:0,suggested_documents:0,suggested_food:0,suggested_memes:0,suggested_screenshots:0,suggested_other:0,suggested_unclassified:0,total:0,keep:0,clutter:0,review_later:0,undecided:0,classified:0};
 const text=(v:string)=>v.replaceAll('_',' ').replace(/^\w/,s=>s.toUpperCase());
 const number=(v:number)=>new Intl.NumberFormat().format(v);
 const size=(v:number)=>v>=1048576?(v/1048576).toFixed(1)+' MB':v>=1024?(v/1024).toFixed(1)+' KB':v+' B';
@@ -72,6 +72,12 @@ export default function Review({detailHash,onDetailChange}:{detailHash:string|nu
  const selectionGate=useRef(createLatestGate());
  useEffect(()=>()=>selectionGate.current.cancel(),[]);
 
+ function openBucket(bucket:string){
+  const next={...initial,bucket,review_status:'undecided'};
+  filtersRef.current=next;selectionGate.current.cancel();setScopeBusy(false);
+  setFilters(next);setSearchDraft('');setOffset(0);setChecked(new Set());setAllScope(null);lastIndex.current=null;
+  setNotice('Showing undecided images in this group across all libraries. Select all matching to act on the entire group.');
+ }
  function change(key:keyof Filters,value:string){
   const next={...filtersRef.current,[key]:value};filtersRef.current=next;
   selectionGate.current.cancel();setScopeBusy(false);setFilters(next);setOffset(0);setChecked(new Set());setAllScope(null);lastIndex.current=null;
@@ -207,7 +213,23 @@ export default function Review({detailHash,onDetailChange}:{detailHash:string|nu
  return <section className="review-space" aria-label="Human photo review">
   <div className="eyebrow">MILESTONE 05 · HUMAN REVIEW</div>
   <h1>Review your memories.</h1>
-  <p>AI suggestions are not decisions. You decide, and all identical copies share the same review.</p>
+  <p>AI automatically groups your library. Inspect a sample, select all matching, then Keep or Clutter the whole group.</p>
+  <div className="review-buckets" aria-label="Automatic sorting groups">
+   {([['personal','Personal',stats.suggested_personal,'People, family, portraits and other personal photos.'],
+      ['documents','Documents',stats.suggested_documents,'Paperwork, receipts, tables and records.'],
+      ['food','Food',stats.suggested_food,'Food images without detected people; family meals stay Personal.'],
+      ['memes','Memes / graphics',stats.suggested_memes,'Memes, greetings and graphics.'],
+      ['screenshots','Screenshots',stats.suggested_screenshots,'Screen captures, which may include useful information.'],
+      ['other','Other',stats.suggested_other,'Objects and images outside these groups.'],
+      ['unclassified','Unclassified',stats.suggested_unclassified,'Images still awaiting AI classification.']] as const).map(([key,title,total,description])=>
+    <button className={'panel review-bucket '+(filters.bucket===key?'active':'')} key={key}
+      aria-pressed={filters.bucket===key} onClick={()=>openBucket(key)}>
+     <strong>{title}</strong><b>{number(total||0)}</b><small>{description}</small>
+    </button>)}
+  </div>
+  <p className="review-group-help">Counts show undecided images across all libraries. Grouping uses existing results automatically, including low-confidence results. A group is a content type, not a junk verdict; use confidence and importance filters before bulk decisions.
+   Bulk decisions affect all matching images, including other pages. Clutter stays separate in the app;
+   approved copy exports can place it in a Clutter folder. Originals stay untouched.</p>
   <div className="review-counters">{(['total','undecided','keep','clutter','review_later','classified'] as const)
    .map(key=><div className="panel" key={key}><small>{text(key)}</small><strong>{number(stats[key])}</strong></div>)}</div>
   <div className="panel review-toolbar">
@@ -216,6 +238,7 @@ export default function Review({detailHash,onDetailChange}:{detailHash:string|nu
     setSearchDraft(e.target.value);selectionGate.current.cancel();setScopeBusy(false);
     setAllScope(null);setChecked(new Set());
    }}/></label>
+    {dropdown('AI group','bucket',[['','All groups'],['personal','Personal'],['documents','Documents'],['food','Food'],['memes','Memes / graphics'],['screenshots','Screenshots'],['other','Other'],['unclassified','Unclassified']])}
     {dropdown('Category','category',[['','All categories'],['unclassified','Unclassified'],...categories.map(c=>[c,text(c)] as [string,string])])}
     {dropdown('Decision','review_status',[['','All'],['undecided','Undecided'],['keep','Keep'],['clutter','Clutter'],['review_later','Review later']])}
     {dropdown('AI confidence','uncertain',[['','Any'],['true','Uncertain'],['false','Confident']])}

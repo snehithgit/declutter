@@ -219,3 +219,51 @@ def test_scope_fingerprint_validates_filter_only(collection):
         assert client.get("/api/reviews/selection",
                           params={"date_from": "2027-01-01",
                                   "date_to": "2026-01-01"}).status_code == 422
+
+@pytest.mark.parametrize('category,subcategory,people,expected',[
+ ('personal_photo','portrait',1,'personal'),('personal_photo','food',1,'personal'),
+ ('personal_photo','food',0,'food'),('other','food',0,'food'),
+ ('document','identity_document',0,'documents'),('meme_graphic','greeting',1,'memes'),
+ ('screenshot','other',0,'screenshots'),('other','other',0,'other'),
+])
+def test_content_groups_and_bulk_decisions(collection,category,subcategory,people,expected):
+    settings,a,b,roots,first,second=collection
+    before={p:(p.read_bytes(),p.stat().st_mtime_ns) for root in (a,b) for p in root.iterdir()}
+    with connect(settings.data_dir) as db:
+        db.execute('''INSERT INTO ai_results(content_hash,model_tag,prompt_version,raw_response,
+            category,subcategory,confidence,reason,contains_people,contains_text,
+            possibly_important,importance_reason,uncertain,duration_ms)
+            VALUES (?,?,?,'{}',?,?,0.5,'test',?,0,1,'test',1,1)''',
+            (first,'model','v1',category,subcategory,people))
+    with TestClient(create_app(settings)) as client:
+        summary=client.get('/api/reviews/summary').json()
+        assert summary['suggested_'+expected]==1
+        assert summary['suggested_unclassified']==1
+        assert sum(v for k,v in summary.items() if k.startswith('suggested_'))==2
+        page=client.get('/api/reviews',params={'bucket':expected,'review_status':'undecided'}).json()
+        assert page['total']==1 and page['items'][0]['content_hash']==first
+        assert page['items'][0]['suggested_bucket']==expected
+        # Content groups preserve uncertain and important items, rather than hiding them.
+        assert page['items'][0]['uncertain']==page['items'][0]['possibly_important']==1
+        filters={'bucket':expected,'review_status':'undecided'}
+        scope=client.get('/api/reviews/selection',params=filters).json()
+        result=client.post('/api/reviews/bulk',json={'filters':filters,
+            'expected_scope_digest':scope['digest'],'decision':'keep'})
+        assert result.json()=={'matched':1,'changed':1}
+        assert client.get('/api/reviews/'+second).json()['decision']=='undecided'
+        assert client.get('/api/reviews/summary').json()['suggested_'+expected]==0
+        assert client.get('/api/reviews',params={'bucket':expected}).json()['total']==1
+    assert {p:(p.read_bytes(),p.stat().st_mtime_ns) for p in before}==before
+
+
+def test_group_scope_rejects_changed_membership(collection):
+    settings,a,b,roots,first,second=collection
+    with TestClient(create_app(settings)) as client:
+        scope=client.get('/api/reviews/selection?bucket=unclassified').json()
+        client.post('/api/reviews/bulk',json={'hashes':[first],'category_override':'personal_photo'})
+        assert client.get('/api/reviews?bucket=personal').json()['total']==1
+        response=client.post('/api/reviews/bulk',json={'filters':{'bucket':'unclassified'},
+            'expected_scope_digest':scope['digest'],'decision':'clutter'})
+        assert response.status_code==409
+        assert client.get('/api/reviews/'+second).json()['decision']=='undecided'
+        assert client.get('/api/reviews?bucket=invalid').status_code==422

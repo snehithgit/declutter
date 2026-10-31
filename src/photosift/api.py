@@ -59,6 +59,7 @@ def _rows(cursor: sqlite3.Cursor) -> list[dict]:
 
 
 def review_query_filters(
+    bucket: Literal["personal","documents","food","memes","screenshots","other","unclassified"] | None = None,
     category: Literal["personal_photo","screenshot","meme_graphic","document","other","unclassified"] | None = None,
     review_status: Literal["undecided","keep","clutter","review_later"] | None = None,
     uncertain: bool | None = None, important: bool | None = None,
@@ -69,7 +70,7 @@ def review_query_filters(
     duplicates_only: bool = False, blurry: bool | None = None, low_res: bool | None = None,
 ) -> ReviewFilters:
     try:
-        return ReviewFilters(category=category, review_status=review_status, uncertain=uncertain,
+        return ReviewFilters(bucket=bucket, category=category, review_status=review_status, uncertain=uncertain,
             important=important,root_id=root_id,folder=folder,search=search,
             date_from=date_from,date_to=date_to,duplicates_only=duplicates_only,
             blurry=blurry,low_res=low_res)
