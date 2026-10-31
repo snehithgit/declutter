@@ -124,3 +124,123 @@ def test_restart_claimed_item_and_api_controls(env,monkeypatch):
         assert db.execute("SELECT state FROM queue_items WHERE job_id=?", (job_id,)).fetchone()[0]=="done"
     with TestClient(create_app(settings)) as client:
         assert len(client.get("/api/classification/results").json())==1
+
+
+def test_resolution_flags_use_original_not_small_preview(tmp_path):
+    from photosift.classification import _signals
+    preview = tmp_path / "preview.webp"
+    image = Image.new("RGB", (4000, 1800), "green")
+    image.thumbnail((1024, 1024))
+    image.save(preview)
+    assert image.size == (1024, 461)
+    assert _signals(preview, (4000, 1800))[1] == 0
+    assert _signals(preview, (320, 240))[1] == 1
+
+
+def test_configured_concurrency_processes_distinct_hashes_in_parallel(env, monkeypatch):
+    from threading import Barrier, Lock
+    import photosift.classification as cls
+    settings, library = env
+    settings.ollama.concurrency = 2
+    Image.new("RGB", (800, 600), "red").save(library / "third.jpg")
+    with connect(settings.data_dir) as db:
+        root = db.execute("SELECT id FROM library_roots").fetchone()[0]
+        scan = uuid.uuid4().hex
+        db.execute("INSERT INTO jobs(id,kind,root_id) VALUES (?,'inventory',?)", (scan, root))
+    run_scan(settings, scan, root, library, Event())
+    barrier, lock, calls = Barrier(2, timeout=3), Lock(), []
+    def predict(*args, **kwargs):
+        with lock:
+            calls.append(1)
+        barrier.wait()
+        return GOOD, 1.0
+    monkeypatch.setattr(cls, "call_ollama", predict)
+    job = queue_classification(settings)
+    assert job["queued"] == 2
+    run_classification(settings, job["job_id"], Event())
+    assert len(calls) == 2
+    with connect(settings.data_dir) as db:
+        assert db.execute("SELECT COUNT(*) FROM ai_results").fetchone()[0] == 2
+        assert db.execute("SELECT completed FROM jobs WHERE id=?", (job["job_id"],)).fetchone()[0] == 2
+
+
+def test_timeout_is_retryable_and_successful_retry_finishes(env, monkeypatch):
+    import photosift.classification as cls
+    settings, _ = env
+    stop = Event()
+    job = queue_classification(settings)
+    def timed_out(*args, **kwargs):
+        stop.set()
+        raise cls.RetryableInferenceError("Request timed out")
+    monkeypatch.setattr(cls, "call_ollama", timed_out)
+    run_classification(settings, job["job_id"], stop)
+    with connect(settings.data_dir) as db:
+        item = db.execute("SELECT state,attempts FROM queue_items").fetchone()
+        assert tuple(item) == ("failed_retryable", 1)
+        db.execute("UPDATE queue_items SET available_at=datetime('now','-1 second')")
+    monkeypatch.setattr(cls, "call_ollama", lambda *a, **k: (GOOD, 1))
+    run_classification(settings, job["job_id"], Event())
+    with connect(settings.data_dir) as db:
+        assert db.execute("SELECT state FROM queue_items").fetchone()[0] == "done"
+
+
+def test_lease_loss_discards_inflight_success_and_releases_claim(env, monkeypatch):
+    import photosift.classification as cls
+    settings, _ = env
+    stop = Event()
+    def finished_after_stop(*args, **kwargs):
+        stop.set()
+        return GOOD, 1
+    monkeypatch.setattr(cls, "call_ollama", finished_after_stop)
+    job = queue_classification(settings)
+    run_classification(settings, job["job_id"], stop)
+    with connect(settings.data_dir) as db:
+        assert db.execute("SELECT COUNT(*) FROM ai_results").fetchone()[0] == 0
+        assert tuple(db.execute("SELECT state,attempts FROM queue_items").fetchone()) == ("queued", 0)
+
+
+def test_network_timeout_and_offline_are_different_errors(env, monkeypatch):
+    import urllib.error
+    import photosift.classification as cls
+    settings, _ = env
+    with connect(settings.data_dir) as db:
+        preview = settings.data_dir / db.execute("SELECT preview_path FROM contents").fetchone()[0]
+    def timed_out(*args, **kwargs):
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(cls.urllib.request, "urlopen", timed_out)
+    with pytest.raises(cls.RetryableInferenceError):
+        cls.call_ollama(settings, preview)
+    def offline(*args, **kwargs):
+        raise urllib.error.URLError("Connection refused")
+    monkeypatch.setattr(cls.urllib.request, "urlopen", offline)
+    with pytest.raises(ModelUnavailable):
+        cls.call_ollama(settings, preview)
+
+
+def test_d3_uses_decision_api_and_preserves_raw_scores(env, monkeypatch):
+    import io, json
+    import photosift.classification as cls
+    settings, _ = env
+    payload = {"model": settings.ollama.model, "answers": {
+        "category": {"choice": "document", "confidence": 0.9},
+        "subcategory": {"choice": "receipt", "confidence": 0.8},
+        "contains_people": {"noul": 0.01}, "contains_text": {"noul": 0.99},
+        "possibly_important": {"noul": 0.75}}, "usage": {"input_tokens": 100}}
+    def respond(request, timeout):
+        assert request.full_url.endswith('/v1/systemone')
+        body = json.loads(request.data)
+        assert body["model"] == settings.ollama.model
+        assert body["questions"]["category"]["type"] == "choice"
+        assert body["images"] and "messages" not in body
+        return io.BytesIO(json.dumps(payload).encode())
+    monkeypatch.setattr(cls.urllib.request, "urlopen", respond)
+    with connect(settings.data_dir) as db:
+        preview = settings.data_dir / db.execute("SELECT preview_path FROM contents").fetchone()[0]
+    raw, _ = cls.call_ollama(settings, preview)
+    assert json.loads(raw) == payload
+    result = parse_prediction(raw)
+    assert result.category == "document" and result.subcategory == "receipt"
+    assert result.possibly_important and not result.contains_people
+    payload["answers"]["contains_people"]["noul"] = 1.5
+    with pytest.raises(InvalidPrediction):
+        parse_prediction(json.dumps(payload))

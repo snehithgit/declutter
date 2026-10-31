@@ -157,7 +157,7 @@ Photo originals remain untouched. M2 performs no Ollama inference, sorting, revi
 - `POST /api/jobs/{id}/action` with `{"action":"pause"}`, `resume`, or `cancel`
 - `GET /api/thumbnails/{sha256}` and `GET /api/previews/{sha256}`: cached images
 
-The AI classification milestone (M4) is not enabled. Review the inventory and exact duplicate groups before proceeding.
+Inventory and duplicate inspection are read-only. Classification, review and approved copy export are now available in their respective views.
 
 ## M3 exact duplicates
 
@@ -193,7 +193,7 @@ Run the backend suite with `python -m pytest -q` and build the frontend with `np
 
 First complete a library scan, then open **AI classification** and start a job with the laptop running Ollama on your trusted LAN. Only cached previews (resized JPEGs) are sent to Ollama; original files stay read-only. Results belong to unique SHA-256 content, so duplicates share one result.
 
-Existing results for the same model and prompt version (m4-v1) are skipped unless **Reprocess existing results** is enabled. You can use an optional item limit for small runs. Each result is committed to SQLite immediately. Worker restart recovers running items. An unavailable laptop pauses the job without consuming attempts; reconnect Ollama and press Resume. Pause or cancel takes effect after any in-flight model request (timeout: 120 seconds).
+Existing results for the same model and prompt version (m4-v2) are skipped unless **Reprocess existing results** is enabled. You can use an optional item limit for small runs. Each result is committed to SQLite immediately. Worker restart recovers running items. An unavailable laptop pauses the job without consuming attempts; reconnect Ollama and press Resume. Pause or cancel takes effect after any in-flight model request (timeout: 120 seconds).
 
 The model must return strict schema-valid JSON: category, subcategory, confidence, reason, people/text/importance flags and importance reason. Raw responses, model/prompt versions, duration and uncertainty are retained. Invalid responses retry once, and other per-image errors retry up to three times with exponential backoff. Classification and importance are independent. These are **suggestions**, never user decisions. Cheap preview flags such as blur, low-resolution and screen shape are only hints, not automatic decisions.
 
@@ -206,7 +206,7 @@ The model must return strict schema-valid JSON: category, subcategory, confidenc
 
 ### Benchmark and deployment
 
-`python -m photosift.benchmark --config config.toml --count 5` runs a read-only sample using cached previews and reports throughput, mean latency and errors without writing AI results. No migration is necessary: M4 uses tables established by M1. GitHub commits do not deploy automatically to the running ZimaOS container; after CI succeeds, use the existing registry Compose pull/up commands. Milestones M1–M5 are implemented; M6 copy-only export remains disabled.
+`python -m photosift.benchmark --config config.toml --count 5` runs a read-only sample using cached previews and reports throughput, mean latency and errors without writing AI results. No migration is necessary: M4 uses tables established by M1. GitHub commits do not deploy automatically to the running ZimaOS container; after CI succeeds, use the existing registry Compose pull/up commands. M1–M6 are implemented; copy export is enabled only when its separate writable destination is configured.
 
 
 ## M5 — Human photo review
@@ -316,3 +316,40 @@ PhotoSift is a **single-user trusted-LAN** application without authentication. D
 POSIX does not expose an atomic "unlink only if inode equals X" primitive; an adversarial process with the **same filesystem permissions and simultaneous write access to the export run** could race the final identity check. New export directories are created with restrictive permissions, but administrative/host isolation remains necessary. A crash after the exclusive file link is published but before its SQLite journal update can leave an unowned *orphan* in the export run. PhotoSift refuses to overwrite or delete that file automatically; manual reconciliation is intentionally required. Linux filesystem guarantees, storage health, and container mount configuration remain outside PhotoSift's control.
 
 The worker is still a single process with a renewable lease. If the database or export mount becomes unavailable, the container should restart and resume journaled work when possible; manual recovery may be necessary for ambiguous files. Keep the source library read-only, use a separate writable output mount, back up the SQLite database before production upgrades, and test with a small reviewed sample before a full export.
+
+
+## 0.8.1 fixes and running D3 Nano
+
+- The missing `/api/reviews/selection` endpoint is restored. Every all-matching bulk
+  update now requires its selection digest; requests without one are rejected.
+- D3 Nano is a **decision model**, not a chat model. The default `ollama.protocol =
+  "decision"` sends previews and typed questions to `/v1/systemone`. A compatible
+  vision chat model can explicitly use `protocol = "chat"` and `/api/chat`.
+  There is no automatic model or protocol fallback. See the upstream
+  [Ollama decision API](https://github.com/ollama/ollama/blob/main/docs/capabilities/decision.mdx).
+- Native decision responses and their scores are preserved verbatim in `raw_response`.
+  The displayed reason is an explicit summary of model scores, not invented model-generated
+  prose. Importance is a separate decision; model confidence is not an accuracy guarantee.
+- New jobs freeze protocol, model and prompt version (`m4-v2`). Old queued chat jobs retain
+  their old protocol; cancel and create a new job to opt into decision inference.
+- Classification now honors configured concurrency, default 1, and persists every owned
+  result independently. Paused/cancelled/lease-lost work cannot publish stale results.
+  Connection failures pause the job; timeouts and temporary HTTP errors back off and retry.
+- Low-resolution and screen-shape signals use original dimensions. Existing predictions
+  are not silently rewritten; an explicit reprocess refreshes cached quality signals.
+- Export plans prefer an EXIF-dated copy, then filename dates, then mtime, independent of
+  directory enumeration order. Migration 004 stores exact filesystem IDs as decimal text,
+  supporting Windows IDs wider than SQLite INTEGER while retaining legacy Linux identities.
+- CI runs backend/frontend gates on Windows and Linux, plus the Linux container smoke test.
+  A synthetic 100,000-record test covers pagination and frozen selection without real photos.
+
+For Zima to reach the laptop, set the Windows user environment variable `OLLAMA_HOST` to
+`0.0.0.0:11434` and restart Ollama. Run `scripts/Allow-Ollama-From-Zima.ps1` as administrator
+with your Zima IP; it creates a program/port rule allowing only that address. Set Zima's
+local `.env` `OLLAMA_URL` to the laptop's current LAN IP. Reserve that IP on your router so
+it does not change. No model weights run on Zima; cached previews go to the laptop GPU.
+
+After the image build passes, pull and recreate the Zima service; rebuilding GitHub code
+alone does not change an already running container. Keep `/data` unchanged and back up
+SQLite before upgrading. Sources remain read-only, and actual exports still require
+explicit plan approval. Use generated test images for initial end-to-end verification.

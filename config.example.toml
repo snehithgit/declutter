@@ -12,6 +12,7 @@ port = 8765
 url = "http://127.0.0.1:11434"
 model = "hf.co/ggml-org/vllm-d3-nano-GGUF:Q8_0"
 concurrency = 1
+protocol = "decision" # D3 Nano; use "chat" only for a compatible vision chat model.
 
 [images]
 thumbnail_size = 256

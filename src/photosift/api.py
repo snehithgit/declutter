@@ -23,7 +23,7 @@ from .config import Settings
 from .db import connect, initialize
 from .duplicates import duplicate_summary, list_duplicate_groups, duplicate_group_files
 from .classification import queue_classification, classification_jobs, recent_predictions
-from .review import ReviewFilters, ReviewChange, review_page, review_summary, review_detail, review_copies, review_history, apply_review
+from .review import ReviewFilters, ReviewChange, review_page, review_summary, review_detail, review_copies, review_history, review_selection, apply_review
 from .export import create_plan, export_root, export_list, export_detail, set_export_state, ExportError
 from .logging_setup import configure_logging
 from .worker import LEASE_SECONDS
@@ -91,10 +91,12 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
             version = db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
             worker = db.execute("SELECT heartbeat FROM worker_leases WHERE name='main'").fetchone()
             journal = db.execute("PRAGMA journal_mode").fetchone()[0]
+            inference = db.execute("SELECT created_at FROM ai_results ORDER BY id DESC LIMIT 1").fetchone()
         alive = bool(worker and time.time() - worker["heartbeat"] < LEASE_SECONDS)
         return {"status": "ok" if alive else "degraded", "version": __version__, "milestone": "M8",
                 "database": {"schema_version": version, "journal_mode": journal},
                 "worker": {"state": "ready" if alive else "offline"},
+                "inference": {"last_success": inference["created_at"] if inference else None},
                 "features": {"inventory": True, "duplicates": True, "classification": True, "review": True, "export": True}}
 
     @app.get("/api/settings")
@@ -279,6 +281,14 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
                     offset: int = Query(default=0, ge=0)) -> dict:
         with connect(settings.data_dir) as db:
             return review_page(db, filters, limit, offset)
+
+    @app.get("/api/reviews/selection")
+    def select_matching_reviews(filters: ReviewFilters = Depends(review_query_filters)) -> dict:
+        with connect(settings.data_dir) as db:
+            try:
+                return review_selection(db, filters)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/reviews/bulk")
     def change_reviews(change: ReviewChange) -> dict:

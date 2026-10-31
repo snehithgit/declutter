@@ -1,5 +1,6 @@
 """Durable per-content Ollama classification; source files are never written."""
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor
 import base64
 import io
 import json
@@ -16,7 +17,7 @@ from .config import Settings
 from .db import connect
 
 logger = logging.getLogger("photosift.classification")
-PROMPT_VERSION = "m4-v1"
+PROMPT_VERSION = "m4-v2"
 PROMPT = ("Classify the image, not its filename. Return only JSON matching the schema. "
           "Image type and importance are independent: receipts and screenshots may be important. "
           "If uncertain, choose other with low confidence. Do not identify people.")
@@ -36,10 +37,62 @@ class Prediction(BaseModel):
 class ModelUnavailable(Exception):
     pass
 
+class RetryableInferenceError(Exception):
+    pass
+
 class InvalidPrediction(Exception):
     pass
 
-def call_ollama(settings: Settings, preview: Path, model: str | None = None) -> tuple[str, float]:
+
+class ChoiceAnswer(BaseModel):
+    model_config = ConfigDict(strict=True)
+    choice: str
+    confidence: float = Field(ge=0, le=1, allow_inf_nan=False)
+
+
+class BooleanAnswer(BaseModel):
+    model_config = ConfigDict(strict=True)
+    noul: float = Field(ge=0, le=1, allow_inf_nan=False)
+
+
+class DecisionAnswers(BaseModel):
+    category: ChoiceAnswer
+    subcategory: ChoiceAnswer
+    contains_people: BooleanAnswer
+    contains_text: BooleanAnswer
+    possibly_important: BooleanAnswer
+
+
+CATEGORY_CRITERIA = {
+    "personal_photo": "A camera photograph of a personal memory: people, pets, places, nature or activities",
+    "screenshot": "A captured phone or computer screen showing an app, website, game or conversation",
+    "meme_graphic": "A meme, joke, greeting, inspirational quote, illustration or forwarded graphic",
+    "document": "A receipt, ticket, certificate, form, identity document or other primarily informational record",
+    "other": "An image which cannot be reliably assigned to the other categories",
+}
+SUBCATEGORY_CRITERIA = {
+    "family": "A family or group photograph", "portrait": "A person's portrait",
+    "pet": "A pet or animal", "landscape": "Nature or scenery", "travel": "Travel or sightseeing",
+    "food": "Food or a meal", "event": "A celebration or event", "receipt": "A receipt or invoice",
+    "ticket": "A ticket or booking", "identity_document": "An identity or official document",
+    "chat": "A conversation screenshot", "app_screen": "An application or website screenshot",
+    "meme": "A joke or reaction graphic", "greeting": "A greeting or motivational graphic",
+    "other": "None of the above",
+}
+
+
+def decision_questions() -> dict:
+    return {
+        "category": {"type": "choice", "instructions": "Which content type best describes this image?", "criteria": CATEGORY_CRITERIA},
+        "subcategory": {"type": "choice", "instructions": "Which description best fits this image?", "criteria": SUBCATEGORY_CRITERIA},
+        "contains_people": {"type": "noul", "instructions": "Are people visible in the image?"},
+        "contains_text": {"type": "noul", "instructions": "Is readable text visible in the image?"},
+        "possibly_important": {"type": "noul", "instructions": "Could this image preserve a personal memory or useful information worth keeping, regardless of its content type?"},
+    }
+
+
+def call_ollama(settings: Settings, preview: Path, model: str | None = None,
+                protocol: str | None = None) -> tuple[str, float]:
     """Use only cached previews over LAN. Originals are not opened or transferred."""
     if preview.is_symlink() or not preview.is_file():
         raise FileNotFoundError("Preview missing; rescan the library")
@@ -55,13 +108,27 @@ def call_ollama(settings: Settings, preview: Path, model: str | None = None) -> 
                       "images": [base64.b64encode(buffer.getvalue()).decode("ascii")]}],
         "options": {"temperature": 0}
     }
-    request = urllib.request.Request(settings.ollama.url + "/api/chat",
+    active_protocol = protocol or settings.ollama.protocol
+    endpoint = "/api/chat"
+    if active_protocol == "decision":
+        endpoint = "/v1/systemone"
+        payload = {"model": model or settings.ollama.model,
+                   "state": "Sort a private photo library. Classify visible content, not file names. Content type and importance are independent. Do not identify people.",
+                   "images": [base64.b64encode(buffer.getvalue()).decode("ascii")],
+                   "questions": decision_questions()}
+    request = urllib.request.Request(settings.ollama.url + endpoint,
         data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
     start = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
             raw_body = response.read(1024 * 1024 + 1)
-    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+    except urllib.error.HTTPError as exc:
+        if exc.code in {429, 500, 502, 503, 504}:
+            raise RetryableInferenceError(f"Ollama HTTP {exc.code}") from exc
+        raise ModelUnavailable(f"Ollama HTTP {exc.code}; check the configured model") from exc
+    except (TimeoutError, ConnectionError, OSError) as exc:
+        if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+            raise RetryableInferenceError("Ollama request timed out") from exc
         raise ModelUnavailable(f"Ollama unavailable: {exc}") from exc
     if len(raw_body) > 1024 * 1024:
         raise InvalidPrediction("Ollama response exceeded 1 MiB")
@@ -69,6 +136,9 @@ def call_ollama(settings: Settings, preview: Path, model: str | None = None) -> 
         data = json.loads(raw_body)
         if "error" in data:
             raise ModelUnavailable(str(data["error"])[:250])
+        if active_protocol == "decision":
+            # Preserve the actual decision response, including scores, in the journal.
+            return raw_body.decode("utf-8"), (time.monotonic() - start) * 1000
         text = data["message"]["content"]
         if not isinstance(text, str):
             raise ValueError("Ollama message was not text")
@@ -78,6 +148,17 @@ def call_ollama(settings: Settings, preview: Path, model: str | None = None) -> 
 
 def parse_prediction(raw: str) -> Prediction:
     try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and "answers" in data:
+            answers = DecisionAnswers.model_validate(data["answers"])
+            important = answers.possibly_important.noul >= 0.5
+            return Prediction(category=answers.category.choice, subcategory=answers.subcategory.choice,
+                confidence=answers.category.confidence,
+                reason=f"D3 decision: {answers.category.choice}; model confidence {answers.category.confidence:.3f}.",
+                contains_people=answers.contains_people.noul >= 0.5,
+                contains_text=answers.contains_text.noul >= 0.5,
+                possibly_important=important,
+                importance_reason=f"D3 importance score: {answers.possibly_important.noul:.3f}." if important else "")
         return Prediction.model_validate_json(raw)
     except (ValidationError, ValueError) as exc:
         raise InvalidPrediction(str(exc)[:500]) from exc
@@ -90,7 +171,8 @@ def queue_classification(settings: Settings, force: bool = False, limit: int | N
             db.rollback()
             raise ValueError(f"Finish or cancel classification job {running['id']} first")
         job_id = uuid.uuid4().hex
-        params = json.dumps({"model": settings.ollama.model, "prompt_version": PROMPT_VERSION, "force": force})
+        params = json.dumps({"model": settings.ollama.model, "prompt_version": PROMPT_VERSION,
+                             "protocol": settings.ollama.protocol, "force": force})
         db.execute("INSERT INTO jobs(id,kind,parameters_json) VALUES (?,'classification',?)", (job_id, params))
         clause = "" if force else """ AND NOT EXISTS (
             SELECT 1 FROM ai_results a WHERE a.content_hash=c.sha256 AND a.model_tag=? AND a.prompt_version=?)"""
@@ -123,9 +205,9 @@ def _preview_path(settings: Settings, digest: str) -> Path | None:
         return expected
     return None
 
-def _signals(preview: Path) -> tuple[float, int, int]:
+def _signals(preview: Path, original_size: tuple[int, int]) -> tuple[float, int, int]:
     with Image.open(preview) as image:
-        w, h = image.size
+        w, h = original_size
         low_resolution = int(min(w, h) < 480)
         ratio = max(w, h) / max(1, min(w, h))
         screen_aspect = int(1.7 < ratio < 2.35)
@@ -144,7 +226,7 @@ def _record_failure(settings: Settings, job_id: str, item: dict, message: str, i
     with connect(settings.data_dir) as db:
         db.execute("BEGIN IMMEDIATE")
         job = db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if job and job["state"] == "running":
+        if job and job["state"] == "running" and _owns_item(db, item):
             invalid_count = item["invalid_response_attempts"] + int(invalid)
             terminal = invalid_count >= 2 if invalid else item["attempts"] >= MAX_ATTEMPTS
             state = "failed_permanent" if terminal else "failed_retryable"
@@ -156,91 +238,118 @@ def _record_failure(settings: Settings, job_id: str, item: dict, message: str, i
                 db.execute("UPDATE jobs SET completed=completed+1 WHERE id=?", (job_id,))
         db.commit()
 
+def _owns_item(db, item: dict) -> bool:
+    row = db.execute("SELECT state,worker_id FROM queue_items WHERE id=?", (item["id"],)).fetchone()
+    return bool(row and row["state"] == "running" and row["worker_id"] == item["worker_id"])
+
+
+def _classify_item(settings: Settings, job_id: str, snapshot: dict, item: dict, stop: object) -> None:
+    digest = item["content_hash"]
+    preview = _preview_path(settings, digest)
+    if preview is None or not preview.is_file():
+        _record_failure(settings, job_id, item, "Preview unavailable; rescan your library")
+        return
+    try:
+        raw, duration = call_ollama(settings, preview, model=snapshot["model"],
+                                   protocol=snapshot.get("protocol", "chat"))
+        prediction = parse_prediction(raw)
+        with connect(settings.data_dir) as db:
+            dimensions = db.execute("""SELECT width,height FROM files WHERE content_hash=?
+                AND width IS NOT NULL AND height IS NOT NULL ORDER BY id LIMIT 1""", (digest,)).fetchone()
+        if dimensions is None:
+            raise ValueError("Original image dimensions unavailable; rescan the library")
+        signals = _signals(preview, (dimensions["width"], dimensions["height"]))
+    except ModelUnavailable as exc:
+        with connect(settings.data_dir) as db:
+            db.execute("BEGIN IMMEDIATE")
+            if _owns_item(db, item):
+                db.execute("UPDATE jobs SET state='paused',pause_reason=? WHERE id=? AND state='running'",
+                           (str(exc)[:500], job_id))
+            db.commit()
+        return
+    except InvalidPrediction as exc:
+        _record_failure(settings, job_id, item, str(exc), invalid=True)
+        return
+    except Exception as exc:
+        _record_failure(settings, job_id, item, f"Inference error: {exc}")
+        return
+    with connect(settings.data_dir) as db:
+        db.execute("BEGIN IMMEDIATE")
+        job = db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if stop.is_set() or not job or job["state"] != "running" or not _owns_item(db, item):
+            db.rollback()
+            return
+        db.execute("""INSERT INTO ai_results(content_hash,model_tag,prompt_version,raw_response,
+            category,subcategory,confidence,reason,contains_people,contains_text,possibly_important,
+            importance_reason,uncertain,duration_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (digest, snapshot["model"], snapshot["prompt_version"], raw, prediction.category,
+             prediction.subcategory, prediction.confidence, prediction.reason,
+             int(prediction.contains_people), int(prediction.contains_text),
+             int(prediction.possibly_important), prediction.importance_reason,
+             int(prediction.confidence < settings.classification.uncertainty_threshold or prediction.category == "other"), duration))
+        db.execute("UPDATE contents SET blur_score=?,low_resolution=?,screen_aspect_ratio=? WHERE sha256=?", (*signals,digest))
+        db.execute("UPDATE queue_items SET state='done',finished_at=CURRENT_TIMESTAMP,error=NULL WHERE id=?", (item["id"],))
+        db.execute("UPDATE jobs SET completed=completed+1 WHERE id=?", (job_id,))
+        db.commit()
+
+
 def run_classification(settings: Settings, job_id: str, stop: object) -> None:
-    """A single leased worker owns the queue. Each result commits independently."""
+    """Bounded parallel inference; each owned result is committed immediately."""
+    owner = uuid.uuid4().hex
     with connect(settings.data_dir) as db:
         db.execute("BEGIN IMMEDIATE")
         job = db.execute("SELECT state,parameters_json FROM jobs WHERE id=? AND kind='classification'", (job_id,)).fetchone()
-        if not job or job["state"] not in ("queued","running"):
+        if not job or job["state"] not in ("queued", "running"):
             db.rollback()
             return
         snapshot = json.loads(job["parameters_json"])
-        db.execute("UPDATE queue_items SET state='queued' WHERE job_id=? AND state='running'", (job_id,))
-        db.execute("""UPDATE jobs SET state='running',
-             started_at=COALESCE(started_at,CURRENT_TIMESTAMP),pause_reason=NULL WHERE id=?""", (job_id,))
+        db.execute("UPDATE queue_items SET state='queued',worker_id=NULL WHERE job_id=? AND state='running'", (job_id,))
+        db.execute("""UPDATE jobs SET state='running', started_at=COALESCE(started_at,CURRENT_TIMESTAMP),
+            pause_reason=NULL WHERE id=?""", (job_id,))
         db.commit()
-    while not stop.is_set():
-        with connect(settings.data_dir) as db:
-            db.execute("BEGIN IMMEDIATE")
-            job = db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
-            if not job or job["state"] != "running":
-                db.rollback()
-                return
-            item = db.execute("""SELECT * FROM queue_items WHERE job_id=?
-               AND state IN ('queued','failed_retryable') AND available_at<=CURRENT_TIMESTAMP
-               ORDER BY available_at,id LIMIT 1""", (job_id,)).fetchone()
-            if item is None:
-                pending = db.execute("""SELECT COUNT(*) FROM queue_items WHERE job_id=?
-                    AND state IN ('queued','running','failed_retryable')""", (job_id,)).fetchone()[0]
-                if not pending:
-                    db.execute("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
-                db.commit()
-                if pending:
-                    time.sleep(1)
+    try:
+        with ThreadPoolExecutor(max_workers=settings.ollama.concurrency) as pool:
+            while not stop.is_set():
+                with connect(settings.data_dir) as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    job = db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+                    if not job or job["state"] != "running":
+                        db.rollback()
+                        return
+                    rows = db.execute("""SELECT * FROM queue_items WHERE job_id=?
+                        AND state IN ('queued','failed_retryable') AND available_at<=CURRENT_TIMESTAMP
+                        ORDER BY available_at,id LIMIT ?""", (job_id, settings.ollama.concurrency)).fetchall()
+                    items = []
+                    for row in rows:
+                        item = dict(row)
+                        item["attempts"] += 1
+                        item["worker_id"] = owner
+                        db.execute("""UPDATE queue_items SET state='running',attempts=attempts+1,
+                            worker_id=?,started_at=CURRENT_TIMESTAMP WHERE id=?""", (owner, item["id"]))
+                        items.append(item)
+                    if not items:
+                        pending = db.execute("""SELECT COUNT(*) FROM queue_items WHERE job_id=?
+                            AND state IN ('queued','running','failed_retryable')""", (job_id,)).fetchone()[0]
+                        if not pending:
+                            db.execute("UPDATE jobs SET state='done',finished_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+                        db.commit()
+                        if not pending:
+                            return
+                    else:
+                        db.commit()
+                if not items:
+                    time.sleep(0.2)
                     continue
-                return
-            item = dict(item)
-            db.execute("UPDATE queue_items SET state='running',attempts=attempts+1,started_at=CURRENT_TIMESTAMP WHERE id=?", (item["id"],))
-            db.commit()
-        item["attempts"] += 1
-        digest = item["content_hash"]
-        preview = _preview_path(settings, digest)
-        if preview is None or not preview.is_file():
-            _record_failure(settings, job_id, item, "Preview unavailable; rescan your library")
-            continue
-        try:
-            raw, duration = call_ollama(settings, preview, model=snapshot["model"])
-        except ModelUnavailable as exc:
-            with connect(settings.data_dir) as db:
-                db.execute("BEGIN IMMEDIATE")
-                db.execute("UPDATE queue_items SET state='queued',attempts=MAX(attempts-1,0) WHERE id=? AND state='running'", (item["id"],))
-                db.execute("UPDATE jobs SET state='paused',pause_reason=? WHERE id=? AND state='running'", (str(exc)[:500], job_id))
-                db.commit()
-            return
-        except InvalidPrediction as exc:
-            _record_failure(settings, job_id, item, str(exc), invalid=True)
-            continue
-        except Exception as exc:
-            _record_failure(settings, job_id, item, f"Inference error: {exc}")
-            continue
-        try:
-            prediction = parse_prediction(raw)
-            signals = _signals(preview)
-        except InvalidPrediction as exc:
-            _record_failure(settings, job_id, item, str(exc), invalid=True)
-            continue
-        except Exception as exc:
-            _record_failure(settings, job_id, item, f"Preview error: {exc}")
-            continue
+                futures = [pool.submit(_classify_item, settings, job_id, snapshot, item, stop) for item in items]
+                for future in futures:
+                    future.result()
+    finally:
+        # A paused/cancelled/stopped request cannot publish a stale result. Only
+        # claims owned by this run are released; a successor's claims stay intact.
         with connect(settings.data_dir) as db:
-            db.execute("BEGIN IMMEDIATE")
-            job = db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
-            if not job or job["state"] != "running":
-                db.rollback()
-                return
-            db.execute("""INSERT INTO ai_results(content_hash,model_tag,prompt_version,raw_response,
-                category,subcategory,confidence,reason,contains_people,contains_text,possibly_important,
-                importance_reason,uncertain,duration_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (digest, snapshot["model"], snapshot["prompt_version"], raw, prediction.category,
-                 prediction.subcategory, prediction.confidence, prediction.reason,
-                 int(prediction.contains_people), int(prediction.contains_text),
-                 int(prediction.possibly_important), prediction.importance_reason,
-                 int(prediction.confidence < settings.classification.uncertainty_threshold or prediction.category=="other"),duration))
-            db.execute("UPDATE contents SET blur_score=?,low_resolution=?,screen_aspect_ratio=? WHERE sha256=?", (*signals,digest))
-            db.execute("UPDATE queue_items SET state='done',finished_at=CURRENT_TIMESTAMP,error=NULL WHERE id=?", (item["id"],))
-            db.execute("UPDATE jobs SET completed=completed+1 WHERE id=?", (job_id,))
-            db.commit()
-    # Claimed items are reset to queued when the restarted worker resumes this job.
+            db.execute("""UPDATE queue_items SET state='queued',worker_id=NULL,attempts=MAX(attempts-1,0)
+                WHERE job_id=? AND state='running' AND worker_id=?""", (job_id, owner))
+
 
 def classification_jobs(settings: Settings) -> list[dict]:
     with connect(settings.data_dir) as db:

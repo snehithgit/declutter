@@ -17,8 +17,12 @@ concurrency:
 
 jobs:
   test:
-    name: Backend tests and frontend build
-    runs-on: ubuntu-latest
+    name: Backend tests and frontend build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

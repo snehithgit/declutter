@@ -58,7 +58,7 @@ def test_migrations_idempotent_and_preserve_records(config_file: Path):
     with connect(settings.data_dir) as db:
         assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
+        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
         assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
         assert db.execute("SELECT decision FROM reviews").fetchone() is None

@@ -58,6 +58,8 @@ class ReviewChange(BaseModel):
             raise ValueError("No changes requested")
         if self.expected_scope_digest is not None and self.filters is None:
             raise ValueError("Scope fingerprint requires an all-matching filter selection")
+        if self.filters is not None and self.expected_scope_digest is None:
+            raise ValueError("Select all matching first to obtain a scope fingerprint")
         if self.clear_category and self.category_override is not None:
             raise ValueError("Cannot both clear and set category")
         return self

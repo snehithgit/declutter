@@ -248,9 +248,9 @@ def test_rollback_refuses_identical_byte_replacement(library):
     target = Path(export_detail(settings, plan["id"])["operations"][0]["destination"])
     with connect(settings.data_dir) as db:
         owned = db.execute(
-            "SELECT output_device,output_inode FROM export_operations WHERE export_id=?",
+            "SELECT output_device_exact,output_inode_exact FROM export_operations WHERE export_id=?",
             (plan["id"],)).fetchone()
-        assert (owned["output_device"],owned["output_inode"]) == (
+        assert (int(owned["output_device_exact"]),int(owned["output_inode_exact"])) == (
             target.stat().st_dev,target.stat().st_ino)
     replacement = target.with_name("different-inode.tmp")
     replacement.write_bytes(target.read_bytes())
@@ -275,7 +275,7 @@ def test_rollback_refuses_legacy_output_without_ownership_metadata(library):
     target = Path(export_detail(settings, plan["id"])["operations"][0]["destination"])
     with connect(settings.data_dir) as db:
         db.execute(
-            "UPDATE export_operations SET output_device=NULL,output_inode=NULL WHERE export_id=?",
+            "UPDATE export_operations SET output_device=NULL,output_inode=NULL,output_device_exact=NULL,output_inode_exact=NULL WHERE export_id=?",
             (plan["id"],))
     set_export_state(settings, plan["id"], "rollback", "ROLLBACK COPIES")
     rollback_export(settings, plan["id"])
@@ -283,6 +283,30 @@ def test_rollback_refuses_legacy_output_without_ownership_metadata(library):
     detail = export_detail(settings, plan["id"])
     assert detail["state"] == "rollback_partial"
     assert "ownership" in detail["operations"][0]["error"].lower()
+
+
+def test_filesystem_identity_larger_than_sqlite_integer_is_preserved(library, monkeypatch):
+    import photosift.export as exporter
+    settings, photos, exports, digest = library
+    plan = create_plan(settings)
+    real_copy = exporter._copy_one
+    device, inode = 2**80 + 7, 2**110 + 9
+    def wide_identity(*args, **kwargs):
+        value, _, _ = real_copy(*args, **kwargs)
+        return value, device, inode
+    monkeypatch.setattr(exporter, "_copy_one", wide_identity)
+    approve(settings, plan["id"])
+    run_export(settings, plan["id"], Event())
+    assert export_detail(settings, plan["id"])["state"] == "done"
+    with connect(settings.data_dir) as db:
+        row = db.execute("SELECT * FROM export_operations WHERE export_id=?", (plan["id"],)).fetchone()
+        assert int(row["output_device_exact"]) == device
+        assert int(row["output_inode_exact"]) == inode
+        assert row["output_device"] is None and row["output_inode"] is None
+    # A fabricated identity must not authorize rollback of the actual output.
+    set_export_state(settings, plan["id"], "rollback", "ROLLBACK COPIES")
+    rollback_export(settings, plan["id"])
+    assert export_detail(settings, plan["id"])["state"] == "rollback_partial"
 
 
 def test_m8_restart_recovers_in_progress_copy(library):

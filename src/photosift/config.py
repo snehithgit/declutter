@@ -7,6 +7,7 @@ import os
 import tomllib
 from pathlib import Path
 from urllib.parse import urlsplit
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -31,6 +32,7 @@ class Ollama(StrictModel):
     url: str = "http://127.0.0.1:11434"
     model: str = "hf.co/ggml-org/vllm-d3-nano-GGUF:Q8_0"
     concurrency: int = Field(default=1, ge=1)
+    protocol: Literal["decision", "chat"] = "decision"
 
     @field_validator("url")
     @classmethod
@@ -51,6 +53,8 @@ class Ollama(StrictModel):
     def nonempty_model(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("model cannot be empty")
+        if value.endswith(":cloud"):
+            raise ValueError("Cloud models are not supported; select a local model")
         return value
 
 

@@ -77,15 +77,18 @@ def test_changes_audited_idempotent_and_originals_unmodified(collection):
 def test_select_all_matching_and_filters(collection):
     settings,a,b,roots,first,second=collection
     with TestClient(create_app(settings)) as client:
+        snapshot=client.get("/api/reviews/selection",params={"root_id":roots["backup"],"duplicates_only":True}).json()
         response=client.post("/api/reviews/bulk",json={
             "filters":{"root_id":roots["backup"],"duplicates_only":True},
+            "expected_scope_digest":snapshot["digest"],
             "decision":"review_later"})
         assert response.json()=={"matched":1,"changed":1}
         assert client.get("/api/reviews",params={"root_id":roots["backup"],"review_status":"review_later"}).json()["total"]==1
         assert client.get("/api/reviews",params={"root_id":roots["backup"],"search":"no-match"}).json()["total"]==0
         assert client.get("/api/reviews",params={"folder":"first.jpg"}).json()["total"]==1
         assert client.get("/api/reviews",params={"category":"unclassified"}).json()["total"]==2
-        assert client.post("/api/reviews/bulk",json={"filters":{},"decision":"clutter"}).json()["changed"]==2
+        snapshot=client.get("/api/reviews/selection").json()
+        assert client.post("/api/reviews/bulk",json={"filters":{},"expected_scope_digest":snapshot["digest"],"decision":"clutter"}).json()["changed"]==2
         assert client.get("/api/reviews/summary").json()["clutter"]==2
 
 
@@ -208,6 +211,8 @@ def test_frozen_scope_detects_replaced_membership_even_when_count_unchanged(coll
 def test_scope_fingerprint_validates_filter_only(collection):
     settings, a, b, roots, first, second = collection
     with TestClient(create_app(settings)) as client:
+        assert client.post("/api/reviews/bulk", json={
+            "filters": {}, "decision": "clutter"}).status_code == 422
         assert client.post("/api/reviews/bulk", json={
             "hashes": [first], "expected_scope_digest": "b"*64,
             "decision": "keep"}).status_code == 422

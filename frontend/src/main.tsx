@@ -8,10 +8,10 @@ import Review from './Review';
 import Exports from './Exports';
 import {parseRoute,routeHash} from './state.mjs';
 
-type Health = { status: string; milestone: string; version: string;
+type Health = { status: string; milestone: string; version: string; inference: {last_success: string|null};
   database: { schema_version: number; journal_mode: string }; worker: { state: string } };
 type Settings = { data_dir: string; library_roots: string[];
-  ollama: { url: string; model: string; concurrency: number }; ollama_checked: boolean };
+  ollama: { url: string; model: string; concurrency: number; protocol: string }; ollama_checked: boolean };
 
 function App() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -79,7 +79,7 @@ function App() {
       <section className="status-grid" aria-label="System status">
         <Status title="DATABASE" value={health ? 'Connected' : 'Connecting…'} note={health ? `Schema ${health.database.schema_version} · ${health.database.journal_mode.toUpperCase()}` : 'Waiting for the backend'} good={!!health && !error}/>
         <Status title="BACKGROUND WORKER" value={health?.worker.state === 'ready' ? 'Ready' : 'Offline'} note="Separate process · persistent state" good={health?.worker.state === 'ready' && !error}/>
-        <Status title="AI INFERENCE" value="Not checked yet" note="Ollama only contacted during classification" good={false}/>
+        <Status title="AI INFERENCE" value={health?.inference.last_success ? 'Results available' : 'Configured'} note={health?.inference.last_success ? `Last result: ${health.inference.last_success}` : 'Local model · laptop must be online'} good={!!health?.inference.last_success}/>
       </section>
       <section className="foundation panel"><div className="foundation-icon">✳</div><div><span className="eyebrow">READ-ONLY INVENTORY</span><h2>Discover your photo library.</h2>
         <p>Inventory, duplicates, AI classification, human review and explicitly approved copy-only exports are available.</p>
@@ -96,6 +96,7 @@ function App() {
         <div className="panel config-panel"><div className="card-heading"><span>⌘</span><h3>Local AI connection</h3></div>
           <h4>Model</h4><code>{settings?.ollama.model ?? 'Loading…'}</code>
           <h4>Ollama endpoint</h4><code>{settings?.ollama.url ?? 'Loading…'}</code>
+          <p className="muted">Protocol: {settings?.ollama.protocol === 'decision' ? 'D3 decision API' : 'Vision chat API'}</p>
           <p className="muted">{settings?.ollama.concurrency ?? 1} inference request at a time. M4 sends cached previews to Ollama only when a classification job is started.</p>
         </div>
       </section>

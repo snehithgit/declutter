@@ -92,9 +92,11 @@ def _plan_rows(db: sqlite3.Connection, include_clutter: bool) -> list[sqlite3.Ro
         COALESCE(a.reason,'') AS reason
       FROM reviews v
       JOIN files f ON f.id=(
-        SELECT MIN(f2.id) FROM files f2 JOIN library_roots r2 ON r2.id=f2.root_id
+        SELECT f2.id FROM files f2 JOIN library_roots r2 ON r2.id=f2.root_id
         WHERE f2.content_hash=v.content_hash AND f2.missing=0 AND r2.enabled=1
-          AND f2.readable=1)
+          AND f2.readable=1
+        ORDER BY CASE f2.date_source WHEN 'exif' THEN 0 WHEN 'filename' THEN 1 ELSE 2 END,
+                 f2.id LIMIT 1)
       JOIN library_roots r ON r.id=f.root_id
       LEFT JOIN ai_results a ON a.id=(SELECT MAX(id) FROM ai_results
                                       WHERE content_hash=v.content_hash)
@@ -436,8 +438,10 @@ def run_export(settings: Settings, run_id: str, stop: Protocol) -> None:
             digest, device, inode = _copy_one(run_root,row,Path(src_row["root_path"]),stop)
             with connect(settings.data_dir) as db:
                 db.execute("""UPDATE export_operations SET state='done',created_by_export=1,verified_hash=?,
-                    output_device=?,output_inode=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                    (digest,device,inode,row["id"]))
+                    output_device=?,output_inode=?,output_device_exact=?,output_inode_exact=?,
+                    error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                    (digest,device if device < 2**63 else None,inode if inode < 2**63 else None,
+                     str(device),str(inode),row["id"]))
         except Exception as exc:
             with connect(settings.data_dir) as db:
                 db.execute("UPDATE export_operations SET state='failed',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -471,18 +475,21 @@ def rollback_export(settings: Settings, run_id: str, stop: Protocol | None = Non
                     db.execute("UPDATE export_operations SET state='rolled_back',error=NULL,"
                                "updated_at=CURRENT_TIMESTAMP WHERE id=?", (row["id"],))
                 continue
-            if row["output_device"] is None or row["output_inode"] is None:
+            device_value = row["output_device_exact"] if row["output_device_exact"] is not None else row["output_device"]
+            inode_value = row["output_inode_exact"] if row["output_inode_exact"] is not None else row["output_inode"]
+            if device_value is None or inode_value is None:
                 raise ExportError("Missing ownership evidence: refusing automatic rollback")
+            device, inode = int(device_value), int(inode_value)
             if os.name == "posix":
                 # Open every directory component with O_NOFOLLOW. The hash and
                 # inode checks operate on the same descriptor used at unlinkat.
                 remove_verified(run_root.parent, dst.relative_to(run_root.parent),
-                                row["output_device"],row["output_inode"],row["verified_hash"])
+                                device,inode,row["verified_hash"])
             else:
                 if not dst.is_file() or dst.is_symlink():
                     raise ExportError("Output modified: refusing to remove")
                 identity = dst.stat(follow_symlinks=False)
-                if (identity.st_dev != row["output_device"] or identity.st_ino != row["output_inode"]):
+                if (identity.st_dev != device or identity.st_ino != inode):
                     raise ExportError("Output was replaced: refusing to remove")
                 if _hash(dst) != row["verified_hash"]:
                     raise ExportError("Output modified: refusing to remove")
