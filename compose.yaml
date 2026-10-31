@@ -1,7 +1,7 @@
 name: photosift
 services:
   photosift:
-    image: photosift:0.7.0-m7
+    image: photosift:0.8.0-m8
     build: .
     container_name: photosift
     restart: unless-stopped

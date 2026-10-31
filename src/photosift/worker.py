@@ -92,7 +92,7 @@ def run_worker(config_path: str, stop: StopEvent) -> None:
                     if exporting:
                         export_id, state = exporting
                         if state == "rollback_requested":
-                            rollback_export(settings, export_id)
+                            rollback_export(settings, export_id, combined)
                         else:
                             run_export(settings, export_id, combined)
                     else:

@@ -92,7 +92,7 @@ def create_app(settings: Settings, frontend_dir: Path | None = None) -> FastAPI:
             worker = db.execute("SELECT heartbeat FROM worker_leases WHERE name='main'").fetchone()
             journal = db.execute("PRAGMA journal_mode").fetchone()[0]
         alive = bool(worker and time.time() - worker["heartbeat"] < LEASE_SECONDS)
-        return {"status": "ok" if alive else "degraded", "version": __version__, "milestone": "M7",
+        return {"status": "ok" if alive else "degraded", "version": __version__, "milestone": "M8",
                 "database": {"schema_version": version, "journal_mode": journal},
                 "worker": {"state": "ready" if alive else "offline"},
                 "features": {"inventory": True, "duplicates": True, "classification": True, "review": True, "export": True}}

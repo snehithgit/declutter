@@ -283,3 +283,98 @@ def test_rollback_refuses_legacy_output_without_ownership_metadata(library):
     detail = export_detail(settings, plan["id"])
     assert detail["state"] == "rollback_partial"
     assert "ownership" in detail["operations"][0]["error"].lower()
+
+
+def test_m8_restart_recovers_in_progress_copy(library):
+    """Abrupt shutdown leaves a journaled in_progress row, not an unapproved job."""
+    settings, photos, exports, digest = library
+    plan = create_plan(settings)
+    approve(settings, plan["id"])
+    with connect(settings.data_dir) as db:
+        db.execute("UPDATE export_runs SET state='running' WHERE id=?", (plan["id"],))
+        db.execute("UPDATE export_operations SET state='in_progress' WHERE export_id=?", (plan["id"],))
+    run_export(settings, plan["id"], Event())
+    detail = export_detail(settings, plan["id"])
+    assert detail["state"] == "done"
+    assert detail["copied"] == 1
+    target = Path(detail["operations"][0]["destination"])
+    assert target.read_bytes() in [p.read_bytes() for p in photos.iterdir()]
+    assert all(p.is_file() for p in photos.iterdir())
+
+
+def test_m8_source_replaced_with_symlink_after_validation_is_rejected(library, monkeypatch):
+    import photosift.export as exporter
+    settings, photos, exports, digest = library
+    plan = create_plan(settings)
+    approve(settings, plan["id"])
+    expected = Path(export_detail(settings, plan["id"])["operations"][0]["destination"])
+    original_copy = exporter._copy_one
+
+    def race(run_root, row, source_root=None, stop=None):
+        source = Path(row["source"])
+        original = source.with_name(source.name + ".moved")
+        source.rename(original)
+        source.symlink_to(original)
+        return original_copy(run_root, row, source_root, stop)
+
+    monkeypatch.setattr(exporter, "_copy_one", race)
+    run_export(settings, plan["id"], Event())
+    detail = export_detail(settings, plan["id"])
+    assert detail["state"] == "done_with_errors"
+    assert detail["failed"] == 1
+    assert not expected.exists()
+    assert all(p.is_file() or p.is_symlink() for p in photos.iterdir())
+
+
+def test_m8_crash_after_publish_does_not_overwrite_output_on_retry(library, monkeypatch):
+    import photosift.export as exporter
+    settings, photos, exports, digest = library
+    before = {p.name: p.read_bytes() for p in photos.iterdir()}
+    plan = create_plan(settings)
+    approve(settings, plan["id"])
+    target = Path(export_detail(settings, plan["id"])["operations"][0]["destination"])
+    real = exporter._copy_one
+
+    def publish_then_crash(*args, **kwargs):
+        real(*args, **kwargs)
+        raise RuntimeError("simulated crash after linkat, before journal commit")
+
+    monkeypatch.setattr(exporter, "_copy_one", publish_then_crash)
+    run_export(settings, plan["id"], Event())
+    assert export_detail(settings, plan["id"])["state"] == "done_with_errors"
+    assert target.is_file()
+    first = target.read_bytes()
+    monkeypatch.setattr(exporter, "_copy_one", real)
+    set_export_state(settings, plan["id"], "retry", "RETRY FAILED")
+    run_export(settings, plan["id"], Event())
+    assert export_detail(settings, plan["id"])["state"] == "done_with_errors"
+    assert target.read_bytes() == first
+    assert {p.name: p.read_bytes() for p in photos.iterdir()} == before
+
+
+def test_m8_date_path_requires_valid_iso_date():
+    from photosift.export import _relative_destination
+    assert _relative_destination("personal_photo", "keep", "2026-10-31T08:00:00", "p.jpg") == (
+        Path("Organized/Photos/2026/2026-10/p.jpg"))
+    for bad in ("../../../../", "not a date", "2026-13-88", ""):
+        result = _relative_destination("personal_photo", "keep", bad, "p.jpg")
+        assert result == Path("Organized/Photos/Unknown/Unknown/p.jpg")
+
+
+def test_m8_rollback_stops_on_lost_worker_lease_and_resumes(library):
+    settings, photos, exports, digest = library
+    plan = create_plan(settings)
+    approve(settings, plan["id"])
+    run_export(settings, plan["id"], Event())
+    target = Path(export_detail(settings, plan["id"])["operations"][0]["destination"])
+    assert target.exists()
+    set_export_state(settings, plan["id"], "rollback", "ROLLBACK COPIES")
+    lost = Event()
+    lost.set()
+    rollback_export(settings, plan["id"], lost)
+    assert export_detail(settings, plan["id"])["state"] == "rollback_requested"
+    assert target.is_file()
+    rollback_export(settings, plan["id"], Event())
+    assert export_detail(settings, plan["id"])["state"] == "rolled_back"
+    assert not target.exists()
+    assert all(p.is_file() for p in photos.iterdir())

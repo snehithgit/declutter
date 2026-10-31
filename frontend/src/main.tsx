@@ -62,7 +62,7 @@ function App() {
       <div className="sidebar-foot"><span className="dot"/> Local processing<br/><small>Your library stays on your devices.</small></div>
     </aside>
     <main>
-      <header><span>Workspace <span className="slash">/</span> {page === 'overview' ? 'Overview' : page === 'duplicates' ? 'Duplicates' : page === 'classification' ? 'AI classification' : page === 'review' ? 'Review' : 'Copy export'}</span><span className="badge">MILESTONE 07</span></header>
+      <header><span>Workspace <span className="slash">/</span> {page === 'overview' ? 'Overview' : page === 'duplicates' ? 'Duplicates' : page === 'classification' ? 'AI classification' : page === 'review' ? 'Review' : 'Copy export'}</span><span className="badge">MILESTONE 08</span></header>
       <div className="mobile-view-switch" aria-label="Workspace view">
         <a className={page === 'overview' ? 'selected' : ''} href={routeHash('overview')}>Overview</a>
         <a className={page === 'duplicates' ? 'selected' : ''} href={routeHash('duplicates')}>Duplicates</a>
@@ -100,7 +100,7 @@ function App() {
         </div>
       </section>
       </>}
-      <footer><span>Originals stay untouched. You stay in control.</span><span>PhotoSift {health?.version ?? '0.6.0'}</span></footer>
+      <footer><span>Originals stay untouched. You stay in control.</span><span>PhotoSift {health?.version ?? '0.8.0'}</span></footer>
     </main>
   </div>;
 }

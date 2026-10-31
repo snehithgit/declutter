@@ -10,10 +10,12 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+from datetime import date
 from typing import Protocol
 
 from .config import Settings
 from .db import connect
+from .fs_guard import copy_verified, remove_verified, within, UnsafeFilesystem
 
 SAFE_NAME = re.compile(r"[^a-zA-Z0-9_\-. ()\[\]@]+")
 CATEGORIES = {
@@ -72,8 +74,11 @@ def _relative_destination(category: str, decision: str, stamp: str, original: st
     elif decision == "review_later":
         folder = Path("Organized/Review-Later")
     elif category == "personal_photo":
-        year = stamp[:4] if len(stamp) >= 10 else "Unknown"
-        month = stamp[:7] if len(stamp) >= 10 else "Unknown"
+        try:
+            parsed = date.fromisoformat(stamp[:10])
+            year, month = f"{parsed.year:04d}", f"{parsed.year:04d}-{parsed.month:02d}"
+        except ValueError:
+            year = month = "Unknown"
         folder = Path("Organized/Photos") / year / month
     else:
         folder = Path("Organized") / CATEGORIES.get(category, "Other")
@@ -253,9 +258,19 @@ def _safe_destination(root: Path, destination: Path, create: bool = False) -> No
         raise ExportError("Destination is a symlink")
 
 
-def _copy_one(run_root: Path, row: sqlite3.Row) -> tuple[str, int, int]:
+def _copy_one(run_root: Path, row: sqlite3.Row, source_root: Path | None = None,
+              stop: Protocol | None = None) -> tuple[str, int, int]:
     src = Path(row["source"])
     dst = Path(row["destination"])
+    if os.name == "posix":
+        if source_root is None:
+            raise ExportError("Cannot securely copy without a verified source root")
+        # Do not resolve the names after validation: the descriptor walk rejects
+        # swapped symlinks and pins the exact source inode for both hash and copy.
+        return copy_verified(source_root, src.relative_to(source_root),
+                             run_root.parent, dst.relative_to(run_root.parent),
+                             row["expected_hash"], row["expected_size"],
+                             stop=stop.is_set if stop is not None else None)
     _safe_destination(run_root,dst,create=True)
     if dst.exists():
         raise ExportError("Destination already exists; never overwrite it")
@@ -286,6 +301,8 @@ def _copy_one(run_root: Path, row: sqlite3.Row) -> tuple[str, int, int]:
         # Capture the identity of the inode actually published, before linking.
         # This prevents rollback from unlinking a replacement with identical bytes.
         owned = tmp.stat(follow_symlinks=False)
+        if stop is not None and stop.is_set():
+            raise ExportError("Export worker stopped before publication")
         os.link(tmp,dst,follow_symlinks=False)
         return row["expected_hash"], owned.st_dev, owned.st_ino
     finally:
@@ -300,24 +317,54 @@ def _csv_cell(value: object) -> object:
 
 
 def _write_manifest(run_root: Path, operations: list[dict]) -> None:
-    _safe_destination(run_root.parent,run_root / "manifest.json",create=True)
+    """Atomic manifest replacement, pinned to the export run directory on Linux."""
     fields = ["source","destination","expected_hash","expected_size","category","decision",
               "model_reason","capture_time","date_source","state","verified_hash","error","output_device","output_inode"]
-    records = [{k:item.get(k) for k in fields} for item in operations]
+    records = [{key:item.get(key) for key in fields} for item in operations]
+
+    def write_payload(extension: str, handle) -> None:
+        if extension == "json":
+            json.dump(records,handle,indent=2,ensure_ascii=False)
+        else:
+            writer = csv.DictWriter(handle,fieldnames=fields)
+            writer.writeheader()
+            writer.writerows({key: _csv_cell(value) for key,value in record.items()}
+                             for record in records)
+
+    if os.name == "posix":
+        with within(run_root.parent, (run_root.name,), create=True) as directory:
+            for extension in ("json","csv"):
+                name = "manifest." + extension
+                temp = "." + name + "." + uuid.uuid4().hex + ".partial"
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os,"O_NOFOLLOW",0)
+                try:
+                    with os.fdopen(os.open(temp,flags,0o600,dir_fd=directory),
+                                   "w",newline="",encoding="utf-8") as handle:
+                        write_payload(extension,handle)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temp,name,src_dir_fd=directory,dst_dir_fd=directory)
+                    os.fsync(directory)
+                finally:
+                    try:
+                        os.unlink(temp,dir_fd=directory)
+                    except FileNotFoundError:
+                        pass
+        return
+
+    # Windows development retains existing atomic manifest behavior.
+    _safe_destination(run_root.parent,run_root / "manifest.json",create=True)
     for extension in ("json","csv"):
         target = run_root / ("manifest." + extension)
         temp = run_root / ("." + target.name + "." + uuid.uuid4().hex + ".partial")
-        with temp.open("x",newline="",encoding="utf-8") as handle:
-            if extension == "json":
-                json.dump(records,handle,indent=2,ensure_ascii=False)
-            else:
-                writer = csv.DictWriter(handle,fieldnames=fields)
-                writer.writeheader()
-                writer.writerows({key: _csv_cell(value) for key, value in record.items()}
-                                 for record in records)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp,target)
+        try:
+            with temp.open("x",newline="",encoding="utf-8") as handle:
+                write_payload(extension,handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp,target)
+        finally:
+            temp.unlink(missing_ok=True)
 
 
 def run_export(settings: Settings, run_id: str, stop: Protocol) -> None:
@@ -345,7 +392,9 @@ def run_export(settings: Settings, run_id: str, stop: Protocol) -> None:
                 operations = [dict(r) for r in db.execute(
                     "SELECT * FROM export_operations WHERE export_id=? ORDER BY id",(run_id,))]
                 try:
-                    _safe_destination(root,run_root / "manifest.json",create=True)
+                    # Only the descriptor-anchored manifest writer may create
+                    # directories on POSIX. No path-based mkdir during export.
+                    _safe_destination(root,run_root / "manifest.json",create=os.name != "posix")
                     _write_manifest(run_root,operations)
                 except Exception:
                     db.execute("UPDATE export_runs SET state='done_with_errors' WHERE id=?", (run_id,))
@@ -384,7 +433,7 @@ def run_export(settings: Settings, run_id: str, stop: Protocol) -> None:
             if src_row is None or _source(src_row["root_path"],src_row["relative_path"]) != Path(row["source"]):
                 raise ExportError("Source path changed or is no longer safe")
             _safe_destination(root,run_root / "manifest.json")
-            digest, device, inode = _copy_one(run_root,row)
+            digest, device, inode = _copy_one(run_root,row,Path(src_row["root_path"]),stop)
             with connect(settings.data_dir) as db:
                 db.execute("""UPDATE export_operations SET state='done',created_by_export=1,verified_hash=?,
                     output_device=?,output_inode=?,updated_at=CURRENT_TIMESTAMP WHERE id=?""",
@@ -395,7 +444,7 @@ def run_export(settings: Settings, run_id: str, stop: Protocol) -> None:
                            (str(exc)[:500],row["id"]))
 
 
-def rollback_export(settings: Settings, run_id: str) -> None:
+def rollback_export(settings: Settings, run_id: str, stop: Protocol | None = None) -> None:
     root = export_root(settings)
     if root is None:
         return
@@ -408,28 +457,36 @@ def rollback_export(settings: Settings, run_id: str) -> None:
             AND created_by_export=1 ORDER BY id DESC""",(run_id,)).fetchall()
     failures = 0
     for row in rows:
+        if stop is not None and stop.is_set():
+            # Keep rollback_requested for deterministic recovery by the new worker.
+            return
         try:
             dst = Path(row["destination"])
             _safe_destination(run_root,dst)
             if row["verified_hash"] != row["expected_hash"]:
                 raise ExportError("Unverified output: refusing to remove")
-            if not dst.exists() and not dst.is_symlink():
-                # Crash recovery: unlink may have succeeded before the journal update.
-                # An already absent output needs no deletion and is safe to reconcile.
+            if os.name != "posix" and not dst.exists() and not dst.is_symlink():
+                # Windows fallback: an already missing output needs no unlink.
                 with connect(settings.data_dir) as db:
                     db.execute("UPDATE export_operations SET state='rolled_back',error=NULL,"
                                "updated_at=CURRENT_TIMESTAMP WHERE id=?", (row["id"],))
                 continue
-            if not dst.is_file() or dst.is_symlink():
-                raise ExportError("Output modified: refusing to remove")
             if row["output_device"] is None or row["output_inode"] is None:
                 raise ExportError("Missing ownership evidence: refusing automatic rollback")
-            identity = dst.stat(follow_symlinks=False)
-            if (identity.st_dev != row["output_device"] or identity.st_ino != row["output_inode"]):
-                raise ExportError("Output was replaced: refusing to remove")
-            if _hash(dst) != row["verified_hash"]:
-                raise ExportError("Output modified: refusing to remove")
-            dst.unlink()
+            if os.name == "posix":
+                # Open every directory component with O_NOFOLLOW. The hash and
+                # inode checks operate on the same descriptor used at unlinkat.
+                remove_verified(run_root.parent, dst.relative_to(run_root.parent),
+                                row["output_device"],row["output_inode"],row["verified_hash"])
+            else:
+                if not dst.is_file() or dst.is_symlink():
+                    raise ExportError("Output modified: refusing to remove")
+                identity = dst.stat(follow_symlinks=False)
+                if (identity.st_dev != row["output_device"] or identity.st_ino != row["output_inode"]):
+                    raise ExportError("Output was replaced: refusing to remove")
+                if _hash(dst) != row["verified_hash"]:
+                    raise ExportError("Output modified: refusing to remove")
+                dst.unlink()
             with connect(settings.data_dir) as db:
                 db.execute("UPDATE export_operations SET state='rolled_back',updated_at=CURRENT_TIMESTAMP WHERE id=?",
                            (row["id"],))

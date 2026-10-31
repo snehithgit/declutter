@@ -1,6 +1,6 @@
 # PhotoSift — Release 1
 
-Local photo decluttering with a persistent read-only inventory. **Current milestone: M7 (navigation and safe review selection).**
+Local photo decluttering with a persistent read-only inventory. **Current milestone: M8 (security and correctness audit and hardening).**
 M2 provides scans and image previews. M3 adds exact duplicates. M4 adds user-initiated Ollama classification with durable queues and validated per-content results. M5 adds human review. M6 adds frozen plans, explicit approval, verified copying and rollback.
 
 ## Accepted architecture
@@ -289,3 +289,30 @@ The Review and Exports pages abort obsolete poll requests and ignore stale respo
 - `python -m pytest -q` — backend regression tests, including frozen scope membership and M6 export/rollback invariants
 
 M8 is the next separate security and correctness audit: filesystem races, export rollback invariants, concurrent jobs, and review consistency. M7 makes no changes to original files, source mounts, or approved export actions.
+
+
+## M8 — Security and correctness audit (Linux production target)
+
+M8 deliberately preserves the existing M6 copy-only approval, audit journal, SHA-256 verification, export snapshots and conservative rollback. No database migration is required.
+
+### Changes made from demonstrable risk paths
+
+- **Symlink/path traversal races:** ZimaOS/Linux export reads and writes now use rooted directory descriptors with \`O_NOFOLLOW\`, including intermediate folders. The original source file is hashed and copied through the **same open file descriptor**. New output directories are created via \`mkdirat\`; verified bytes are published via an exclusive \`linkat\` (never an overwrite).
+- **Rollback path safety:** The destination is opened relative to the export-root directory descriptor. The code verifies inode/device identity and SHA-256 on the opened descriptor, then checks the name's identity again just before \`unlinkat\`. A changed, replaced, symlinked, or unverified output is left alone, and the journal reports a partial rollback for review.
+- **Manifest safety:** Atomic CSV/JSON writes on Linux are rooted in an opened export-run directory, so swapping a directory to a symlink cannot redirect manifest writes. CSV spreadsheet-formula escaping and fsync are retained.
+- **Interrupted worker:** The copy path checks the worker stop/lease-loss signal before publishing a destination; rollback checks it before each item. Interrupted work remains in the existing SQLite journal and is picked up on a subsequent worker run.
+- **Date-derived paths:** Untrusted capture-date text is parsed as an actual ISO date before becoming folder components. Invalid timestamps use \`Unknown/Unknown\`; they cannot create unexpected traversal folders.
+
+### Regression coverage
+
+The test suite includes source and destination symlink injection, swap after source opened, no-overwrite, identical-byte replacement refusal, source immutability, missing output reconciliation, lease-loss cancellation before publication, rollback restart, journal recovery from an in-progress operation, and intentionally orphaned post-publish outputs that are never silently overwritten. These tests complement the existing M6 export and M7 review scope/audit tests.
+
+Run \`python -m pytest -q\` and \`cd frontend && npm test && npm run build\`. CI also verifies Python compilation and startup of the immutable Docker image. No live library photos are needed for these tests.
+
+### Boundaries and remaining risks
+
+PhotoSift is a **single-user trusted-LAN** application without authentication. Do not publish its port to the internet. Its production export hardening uses POSIX directory-descriptor APIs and has been designed for Linux/ZimaOS. Windows development retains earlier path-check operations; it does **not** have identical adversarial race guarantees. For an untrusted Windows export destination, do not assume Linux-level security.
+
+POSIX does not expose an atomic "unlink only if inode equals X" primitive; an adversarial process with the **same filesystem permissions and simultaneous write access to the export run** could race the final identity check. New export directories are created with restrictive permissions, but administrative/host isolation remains necessary. A crash after the exclusive file link is published but before its SQLite journal update can leave an unowned *orphan* in the export run. PhotoSift refuses to overwrite or delete that file automatically; manual reconciliation is intentionally required. Linux filesystem guarantees, storage health, and container mount configuration remain outside PhotoSift's control.
+
+The worker is still a single process with a renewable lease. If the database or export mount becomes unavailable, the container should restart and resume journaled work when possible; manual recovery may be necessary for ambiguous files. Keep the source library read-only, use a separate writable output mount, back up the SQLite database before production upgrades, and test with a small reviewed sample before a full export.

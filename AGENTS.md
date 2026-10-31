@@ -3,7 +3,7 @@
 This is a fresh project. Do not reuse the parent legacy organizer's database or photo operations.
 The accepted architecture is Zima app/database/worker + laptop Ollama inference over LAN.
 
-- Follow the milestone order in README. Stop after each milestone's tests and summary. M7 navigation and scope safety are implemented on main; M8 audit is next. Keep subsequent changes narrow and fully tested.
+- Follow the milestone order in README. Stop after each milestone's tests and summary. M8 audit hardening implemented on main; maintain M6 safety invariants. Keep subsequent changes narrow and fully tested.
 - M6: explicitly approved copy-only exports can write ONLY to a separate mounted export destination. Preserve read-only source mounts. Never move, rename or delete originals; rollback may delete only recorded hash-verified output copies this export created.
 - Never modify originals. Future exports are copy-only and require explicit approval.
 - Use Python 3.12, typed small functions, FastAPI, plain sqlite3, React/Vite/TypeScript.
@@ -22,3 +22,8 @@ The accepted architecture is Zima app/database/worker + laptop Ollama inference 
 
 - M7 all-matching review bulk updates must carry a server snapshot digest validated inside the existing SQLite transaction; changing filters invalidates client selection. Never silently widen the scope.
 - Keep review/export detail state in hash routes so browser history, reload and deep links work. Ignore stale polling results.
+
+- M8 Linux export must use anchored directory descriptors and no-follow source opens. Do not reintroduce path-based mkdir/link/unlink operations in the POSIX export flow.
+- A worker that loses its lease must not publish another output or continue rollback. Preserve journal recovery states.
+- Never auto-delete ambiguous unjournaled output from a crash; manual reconciliation is mandatory.
+- Run new descriptor-based filesystem tests and full backend/frontend test gates before deploying.
